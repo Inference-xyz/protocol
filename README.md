@@ -87,7 +87,7 @@ Native ERC20 token for the protocol with minting capabilities.
 
 1. **Clone the repository:**
    ```bash
-   git clone <repository-url>
+   git clone https://github.com/Inference-xyz/protocol.git
    cd protocol
    ```
 
@@ -105,6 +105,31 @@ Native ERC20 token for the protocol with minting capabilities.
    ```bash
    forge test
    ```
+
+## Contributing
+
+**⚠️ Work in Progress**: This project is currently under active development. The protocol is not yet production-ready and may undergo significant changes.
+
+We welcome contributions from the community! Whether you're interested in:
+- Smart contract development and security
+- Testing and documentation
+- Protocol design and economics
+- Frontend and integration work
+
+Please see our [Contributing Guidelines](CONTRIBUTING.md) for detailed information on how to get started, our development workflow, and submission process.
+
+### Quick Start for Contributors
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Make your changes following our [code style guidelines](CONTRIBUTING.md#code-style-guidelines)
+4. Add tests for new functionality
+5. Ensure all tests pass (`forge test`)
+6. Commit your changes (`git commit -m 'Add amazing feature'`)
+7. Push to the branch (`git push origin feature/amazing-feature`)
+8. Open a Pull Request
+
+For questions or discussions, please open an issue or join our community channels.
 
 ## Security Features
 
