@@ -16,9 +16,7 @@ interface IInferenceERC20 {
     function setMinter(address minter, bool enabled) external;
     function isMinter(address account) external view returns (bool);
     
-    // Events
-    event Transfer(address indexed from, address indexed to, uint256 value);
-    event Approval(address indexed owner, address indexed spender, uint256 value);
+    // Protocol-specific Events (ERC20 events are inherited from OpenZeppelin)
     event MinterUpdated(address indexed minter, bool enabled);
     event Permit2AddressUpdated(address indexed oldAddress, address indexed newAddress);
     event Permit2Transfer(address indexed from, address indexed to, uint256 amount);

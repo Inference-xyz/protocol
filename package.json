@@ -1,0 +1,39 @@
+{
+  "name": "inference-protocol",
+  "version": "1.0.0",
+  "description": "Inference Protocol - Decentralized AI inference competitions and compute marketplace",
+  "main": "index.js",
+  "scripts": {
+    "build": "forge build",
+    "test": "forge test",
+    "deploy:local": "ts-node scripts/deploy.ts --network localhost",
+    "deploy:sepolia": "ts-node scripts/deploy.ts --network sepolia",
+    "deploy:mainnet": "ts-node scripts/deploy.ts --network mainnet",
+    "deploy:proxy:local": "ts-node scripts/deployWithProxy.ts --network localhost",
+    "deploy:proxy:sepolia": "ts-node scripts/deployWithProxy.ts --network sepolia",
+    "deploy:proxy:mainnet": "ts-node scripts/deployWithProxy.ts --network mainnet",
+    "verify": "ts-node scripts/verify.ts",
+    "typechain": "typechain --target ethers-v6 --out-dir typechain 'out/**/*.json'"
+  },
+  "keywords": [
+    "ethereum",
+    "solidity",
+    "defi",
+    "ai",
+    "zk-proofs"
+  ],
+  "author": "Inference Protocol Team",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@typechain/ethers-v6": "^0.5.0",
+    "ethers": "^6.8.0",
+    "hardhat": "^2.19.0",
+    "ts-node": "^10.9.0",
+    "typechain": "^8.3.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "dotenv": "^16.3.0"
+  }
+} 

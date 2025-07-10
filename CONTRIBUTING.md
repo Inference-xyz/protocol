@@ -106,27 +106,6 @@ forge test --match-contract MyContract
 
 4. **Update documentation** as needed
 
-### PR Description Template
-
-```markdown
-## Description
-Brief description of the changes
-
-## Type of Change
-- [ ] Bug fix
-- [ ] New feature
-- [ ] Breaking change
-- [ ] Documentation update
-
-## Testing
-- [ ] All tests pass
-- [ ] New tests added for new functionality
-
-## Security Considerations
-- [ ] Security implications reviewed
-- [ ] Access controls properly implemented
-```
-
 ## Reporting Issues
 
 ### Bug Reports

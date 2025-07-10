@@ -1,3 +1,6 @@
+> [!WARNING]
+> This project is currently under active development. The protocol is not yet production-ready and may undergo significant changes.
+
 # Inference Protocol
 
 A decentralized protocol for AI inference competitions and compute marketplace, built on Ethereum with zero-knowledge proof verification.
@@ -107,8 +110,6 @@ Native ERC20 token for the protocol with minting capabilities.
    ```
 
 ## Contributing
-
-**⚠️ Work in Progress**: This project is currently under active development. The protocol is not yet production-ready and may undergo significant changes.
 
 We welcome contributions from the community! Whether you're interested in:
 - Smart contract development and security

@@ -1,165 +1,121 @@
-# Inference Protocol Architecture - Current vs Proposed
+# Inference Protocol Architecture
 
-## Current Architecture Overview
+## Overview
 
+The Inference Protocol is a decentralized system for AI inference competitions with two distinct contest design variants.
+
+## Core Components
+
+### 1. Token System (`IInferenceERC20.sol`)
+- Native ERC20 token for rewards and governance
+- Minting capabilities for reward distribution
+
+### 2. Reward Distributor (`IRewardDistributor.sol`)
+- Manages token emissions across the protocol
+- Tamper-proof reward distribution
+- Math-based emission calculations
+
+### 3. Contest System
+
+#### Variant 1: Validator Set Only
 ```mermaid
 classDiagram
-    class IInferenceERC20 {
-        +mint(address to, uint256 amount)
-        +burn(uint256 amount)
-        +transfer(address to, uint256 amount)
-    }
-    
-    class IRewardDistributor {
-        +EmissionConfig emissionConfig
-        +ContestWeight[] contestWeights
-        +setComputeSplit(uint256 percent)
-        +setContestWeight(address contest, uint256 weight)
-        +checkpointEmissions()
-        +distributeRewards()
-    }
-    
-    class IContest {
-        +ContestInfo contestInfo
-        +Participant[] participants
-        +EpochResult[] epochResults
-        +joinContest()
-        +submitEntry(bytes32 submissionHash)
-        +finalizeEpoch(address[] winners, uint256[] rewards)
-        +claimReward()
-    }
-    
-    class IContestFactory {
-        +createContest(ContestConfig config)
-        +createContestWithInitialWeight(ContestConfig config, uint256 weight)
-    }
-    
-    class IContestRegistry {
-        +ContestSlot[] contestSlots
-        +DutchAuction[] auctions
-        +registerContest(address contest)
-        +updateContestPerformance(address contest, uint256 score)
-        +initiateReplacement(address newContest)
-    }
-    
-    class IComputeMarketplace {
-        +Job[] jobs
-        +ProviderStats[] providerStats
-        +postJob(string specURI, uint256 bounty)
-        +claimJob(uint256 jobId)
-        +completeJob(uint256 jobId, bytes zkProof)
-        +distributeComputeRewards(uint256 amount)
-    }
-    
-    class IZKVerifier {
-        +ProofData[] proofs
-        +verifyProof(bytes proof, bytes32[] publicInputs)
-        +batchVerifyProofs(ProofData[] proofs)
-        +registerModel(bytes32 modelHash)
-    }
-    
-    IRewardDistributor --> IInferenceERC20 : distributes tokens
-    IRewardDistributor --> IContest : distributes to contests
-    IRewardDistributor --> IComputeMarketplace : distributes to compute
-    IContestFactory --> IContest : creates
-    IContestRegistry --> IContest : manages slots
-    IComputeMarketplace --> IZKVerifier : verifies proofs
-```
-
-## Proposed Architecture Changes
-
-### 1. Updated Reward Distribution System
-
-```mermaid
-classDiagram
-    class IRewardDistributor {
-        +EmissionConfig emissionConfig
-        +ContestWeight[] contestWeights
-        +uint256 minEmissionInterval
-        +uint256 lastEmissionBlock
-        +setContestWeight(address contest, uint256 weight)
-        +checkpointEmissions() : uint256
-        +distributeRewards() : tamper-proof
-        +getEmissionAmount() : math-based
-    }
-    
-    class IDAOGovernance {
-        +proposeEmissionSplit(uint256[] contestWeights)
-        +voteOnProposal(uint256 proposalId, bool support)
-        +executeProposal(uint256 proposalId)
-        +getActiveProposals()
-    }
-    
     class IContest {
         +ContestInfo contestInfo
         +Participant[] participants
         +ValidatorSet validators
         +RewardSplit rewardSplit
-        +setRewardSplit(uint256 ownerPct, uint256 participantPct, uint256 validatorPct)
-        +submitZKProof(bytes32[] inputs, bytes32[] outputs, bytes proof)
-        +submitScores(address[] participants, uint256[] scores, bytes proof)
-        +distributeEpochRewards()
+        +joinContest()
+        +submitEntry(bytes32 submissionHash)
+        +finalizeEpoch()
+        +distributeRewards()
     }
     
     class IValidatorSet {
         +Validator[] validators
-        +uint256 maxValidators
         +uint256 totalStake
         +stake(uint256 amount)
         +unstake(uint256 amount)
-        +setWeights(address[] participants, uint256[] weights)
+        +submitScores(address[] participants, uint256[] scores)
         +getWeightedScores() : uint256[]
     }
     
+    IContest --> IValidatorSet : uses for scoring
+```
+
+**Key Features:**
+- Stake-weighted validator selection
+- Validators directly score submissions
+- Consensus-based final scoring
+- Slashing mechanism for malicious behavior
+- Contest owner controls reward percentages
+
+#### Variant 2: ZK Proof Only
+```mermaid
+classDiagram
+    class IContest {
+        +ContestInfo contestInfo
+        +Participant[] participants
+        +IZKVerifier computationVerifier
+        +IZKScoringVerifier scoringVerifier
+        +joinContest()
+        +submitZKProof(bytes32[] inputs, bytes32[] outputs, bytes proof)
+        +submitScoringProof(bytes32[] outputs, uint256[] scores, bytes proof)
+        +distributeRewards()
+    }
+    
+    class IZKVerifier {
+        +verifyProof(bytes proof, bytes32[] inputs, bytes32[] outputs)
+        +registerModel(bytes32 modelHash)
+    }
+    
     class IZKScoringVerifier {
-        +verifyScoringProof(bytes proof, bytes32[] inputs, bytes32[] outputs, uint256[] scores)
-        +batchVerifyScoringProofs(ProofData[] proofs)
+        +verifyScoringProof(bytes proof, bytes32[] outputs, uint256[] scores)
         +registerScoringModel(bytes32 modelHash)
     }
     
-    class IEZKLFactory {
-        +deployVerificationContract(bytes32 modelHash, bytes circuit)
-        +registerVerificationContract(address contract, bytes32 modelHash)
-        +getVerificationContract(bytes32 modelHash) : address
-    }
-    
-    IDAOGovernance --> IRewardDistributor : controls emission splits
-    IRewardDistributor --> IContest : distributes to contests only
-    IContest --> IValidatorSet : uses for scoring
-    IContest --> IZKScoringVerifier : verifies scoring proofs
-    IEZKLFactory --> IZKScoringVerifier : deploys verification contracts
+    IContest --> IZKVerifier : verifies computation
+    IContest --> IZKScoringVerifier : verifies scoring
 ```
 
-### 2. Enhanced Contest System with ZK Proofs
+**Key Features:**
+- Participants prove computation (input → output)
+- Single verifier proves scoring function execution
+- Contest owner deploys scoring verifier contract
+- Participants can deploy computation verifiers
+- Tamper-proof reward distribution
 
-```mermaid
-sequenceDiagram
-    participant Owner as Contest Owner
-    participant Contest as IContest
-    participant Validator as IValidatorSet
-    participant ZKVerifier as IZKVerifier
-    participant ScoringVerifier as IZKScoringVerifier
-    participant Factory as IEZKLFactory
-    
-    Owner->>Contest: createContest(config)
-    Contest->>Factory: deployVerificationContract(modelHash, circuit)
-    Factory->>ScoringVerifier: deploy new verification contract
-    
-    Note over Contest,ZKVerifier: Epoch Execution
-    loop For each participant
-        Contest->>ZKVerifier: submitZKProof(inputs, outputs, proof)
-        ZKVerifier-->>Contest: verification result
-    end
-    
-    Note over Contest,ScoringVerifier: Scoring Phase
-    Contest->>ScoringVerifier: submitScores(participants, scores, proof)
-    ScoringVerifier-->>Contest: scoring verification result
-    
-    Note over Contest,Validator: Validator Weighting
-    loop For each validator
-        Validator->>Contest: setWeights(participants, weights)
-    end
-    
-    Contest->>Contest: calculateWeightedRewards()
-    Contest->>Contest: distributeEpochRewards()
-```
+### 4. Contest Factory (`IContestFactory.sol`)
+- Creates contests with configurable parameters
+- Supports both validator set and ZK proof variants
+
+### 5. Contest Registry (`IContestRegistry.sol`)
+- Manages contest slots with performance-based ranking
+- Dutch auction mechanism for slot replacement
+
+## Design Comparison
+
+| Aspect | Validator Set | ZK Proof Only |
+|--------|---------------|---------------|
+| **Decentralization** | High (multiple validators) | Medium (single verifier) |
+| **Gas Costs** | Low (no ZK verification) | High (ZK proof verification) |
+| **Trust Model** | Trust in validator consensus | Trust in ZK proof system |
+| **Scalability** | Limited by validator count | Limited by ZK proof costs |
+| **Complexity** | Simple consensus mechanism | Complex ZK proof integration |
+
+## Implementation Flow
+
+### Validator Set Variant
+1. Contest owner creates contest with validator parameters
+2. Validators stake tokens to participate
+3. Participants submit inference results
+4. Validators independently score submissions
+5. Stake-weighted consensus determines final scores
+6. Rewards distributed based on consensus scores
+
+### ZK Proof Variant
+1. Contest owner deploys scoring verifier contract
+2. Participants submit inference results with ZK proofs
+3. Verifier runs scoring function and generates ZK proof
+4. Smart contract verifies all proofs on-chain
+5. Rewards automatically distributed based on verified scores
