@@ -1,6 +1,6 @@
 import { ethers } from 'ethers';
-import fs from 'fs';
-import path from 'path';
+import * as fs from 'fs';
+import * as path from 'path';
 import { networks, deploymentConfig, getPrivateKey } from './config';
 
 interface DeploymentResult {
@@ -21,17 +21,17 @@ interface DeploymentResult {
 }
 
 async function loadContractArtifact(contractName: string): Promise<any> {
-  const artifactPath = path.join(__dirname, '..', 'out', contractName, `${contractName}.json`);
+  const artifactPath = path.join(process.cwd(), 'out', contractName, `${contractName}.json`);
   if (!fs.existsSync(artifactPath)) {
     throw new Error(`Contract artifact not found: ${artifactPath}`);
   }
   return JSON.parse(fs.readFileSync(artifactPath, 'utf8'));
 }
 
-async function deploy() {
+async function deploy(): Promise<void> {
   // Parse command line arguments
   const args = process.argv.slice(2);
-  const networkArg = args.find(arg => arg.startsWith('--network='))?.split('=')[1];
+  const networkArg = args.find((arg: string) => arg.startsWith('--network='))?.split('=')[1];
   const networkName = networkArg || 'localhost';
 
   if (!networks[networkName]) {
@@ -51,7 +51,7 @@ async function deploy() {
   const balance = await provider.getBalance(signer.address);
   console.log(`💰 Deployer balance: ${ethers.formatEther(balance)} ${network.nativeCurrency.symbol}`);
 
-  if (balance === 0n) {
+  if (balance === BigInt(0)) {
     throw new Error('Deployer has no balance');
   }
 
@@ -100,17 +100,18 @@ async function deploy() {
   console.log('⚙️  Setting up initial configuration...');
   
   // Set supported tokens
-  const setSupportedTokensTx = await marketplace.setSupportedTokens([tokenAddress]);
+  const setSupportedTokensTx = await marketplace.getFunction('setSupportedTokens')([tokenAddress]);
   await setSupportedTokensTx.wait();
   console.log('✅ Set supported tokens');
 
-  // Set minimum bounty
-  const setMinBountyTx = await marketplace.setMinBounty(deploymentConfig.marketplace.minBounty);
+  // Set minimum bounty - parse the string as ether
+  const minBountyWei = ethers.parseEther(deploymentConfig.marketplace.minBounty);
+  const setMinBountyTx = await marketplace.getFunction('setMinBounty')(minBountyWei);
   await setMinBountyTx.wait();
   console.log('✅ Set minimum bounty');
 
   // Set default timeout
-  const setTimeoutTx = await marketplace.setJobTimeout(deploymentConfig.marketplace.defaultTimeout);
+  const setTimeoutTx = await marketplace.getFunction('setJobTimeout')(deploymentConfig.marketplace.defaultTimeout);
   await setTimeoutTx.wait();
   console.log('✅ Set default timeout');
 
@@ -133,7 +134,7 @@ async function deploy() {
   };
 
   // Save deployment result
-  const deploymentDir = path.join(__dirname, '..', 'deployments');
+  const deploymentDir = path.join(process.cwd(), 'deployments');
   if (!fs.existsSync(deploymentDir)) {
     fs.mkdirSync(deploymentDir, { recursive: true });
   }

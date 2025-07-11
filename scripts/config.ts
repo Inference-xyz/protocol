@@ -92,7 +92,7 @@ export const deploymentConfig: DeploymentConfig = {
     decimals: parseInt(process.env.TOKEN_DECIMALS || '18'),
   },
   marketplace: {
-    minBounty: process.env.MIN_BOUNTY || '1000000000000000000', // 1 token
+    minBounty: process.env.MIN_BOUNTY || '1.0', // 1 token (in ether units)
     defaultTimeout: parseInt(process.env.DEFAULT_TIMEOUT || '86400'), // 24 hours
   },
 };
