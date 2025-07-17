@@ -8,6 +8,10 @@ interface DeploymentResult {
   chainId: number;
   deployer: string;
   contracts: {
+    EZKLVerifier: {
+      address: string;
+      transactionHash: string;
+    };
     InferenceERC20: {
       address: string;
       transactionHash: string;
@@ -59,6 +63,20 @@ async function deploy(): Promise<void> {
   console.log('📦 Loading contract artifacts...');
   const tokenArtifact = await loadContractArtifact('InferenceERC20.sol/InferenceERC20');
   const marketplaceArtifact = await loadContractArtifact('ComputeMarketplace.sol/ComputeMarketplace');
+  const zkVerifierArtifact = await loadContractArtifact('EZKLVerifier.sol/EZKLVerifier');
+
+  // Deploy EZKLVerifier
+  console.log('🏗️  Deploying EZKLVerifier...');
+  const zkVerifierFactory = new ethers.ContractFactory(
+    zkVerifierArtifact.abi,
+    zkVerifierArtifact.bytecode,
+    signer
+  );
+
+  const zkVerifier = await zkVerifierFactory.deploy(signer.address);
+  await zkVerifier.waitForDeployment();
+  const zkVerifierAddress = await zkVerifier.getAddress();
+  console.log(`✅ EZKLVerifier deployed to: ${zkVerifierAddress}`);
 
   // Deploy InferenceERC20
   console.log('🏗️  Deploying InferenceERC20...');
@@ -89,7 +107,7 @@ async function deploy(): Promise<void> {
 
   const marketplace = await marketplaceFactory.deploy(
     signer.address, // admin
-    ethers.ZeroAddress // zkVerifier (can be set later)
+    zkVerifierAddress // zkVerifier
   );
 
   await marketplace.waitForDeployment();
@@ -121,6 +139,10 @@ async function deploy(): Promise<void> {
     chainId: network.chainId,
     deployer: signer.address,
     contracts: {
+      EZKLVerifier: {
+        address: zkVerifierAddress,
+        transactionHash: zkVerifier.deploymentTransaction()?.hash || '',
+      },
       InferenceERC20: {
         address: tokenAddress,
         transactionHash: token.deploymentTransaction()?.hash || '',
@@ -145,12 +167,14 @@ async function deploy(): Promise<void> {
   console.log('\n🎉 Deployment completed successfully!');
   console.log('📄 Deployment summary:');
   console.log(`   Network: ${network.name}`);
+  console.log(`   EZKLVerifier: ${zkVerifierAddress}`);
   console.log(`   InferenceERC20: ${tokenAddress}`);
   console.log(`   ComputeMarketplace: ${marketplaceAddress}`);
   console.log(`   Deployment file: ${deploymentFile}`);
 
   if (network.blockExplorer) {
     console.log('\n🔍 View on block explorer:');
+    console.log(`   EZKLVerifier: ${network.blockExplorer}/address/${zkVerifierAddress}`);
     console.log(`   InferenceERC20: ${network.blockExplorer}/address/${tokenAddress}`);
     console.log(`   ComputeMarketplace: ${network.blockExplorer}/address/${marketplaceAddress}`);
   }

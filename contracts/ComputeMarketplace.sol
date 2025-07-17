@@ -1,390 +1,323 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+pragma solidity ^0.8.0;
 
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/utils/Pausable.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
 import "./interfaces/IComputeMarketplace.sol";
 import "./interfaces/IZKVerifier.sol";
 
-contract ComputeMarketplace is IComputeMarketplace, AccessControl, Pausable, ReentrancyGuard {
+contract ComputeMarketplace is IComputeMarketplace, Ownable, ReentrancyGuard, Pausable {
     using SafeERC20 for IERC20;
     
-    bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
-    bytes32 public constant RESOLVER_ROLE = keccak256("RESOLVER_ROLE");
+    // State variables
+    IZKVerifier public zkVerifier;
+    uint256 public nextJobId;
+    uint256 public minBounty;
+    uint256 public defaultTimeout;
     
-    mapping(uint256 => Job) private _jobs;
-    mapping(address => ProviderStats) private _providerStats;
-    mapping(address => uint256) private _pendingRewards;
-    mapping(address => bool) private _supportedTokens;
-    mapping(address => mapping(address => uint256)) private _paymentBalances;
+    // Mappings
+    mapping(uint256 => Job) public jobs;
+    mapping(address => ProviderStats) public providerStats;
+    mapping(address => bool) public supportedTokens;
+    mapping(address => uint256[]) public clientJobs;
+    mapping(address => uint256[]) public providerJobs;
+    mapping(bytes32 => bool) public registeredModelHashes;
+    mapping(bytes32 => address) public modelHashRegistrants;
     
-    uint256 private _jobCounter;
-    uint256 private _defaultTimeout = 24 hours;
-    uint256 private _minBounty = 1e18; // 1 token
-    address private _zkVerifier;
+    // Array to track all jobs for enumeration
+    uint256[] public allJobIds;
     
-    address[] private _supportedTokensList;
-    
-    modifier validJob(uint256 jobId) {
-        require(jobId > 0 && jobId <= _jobCounter, "Invalid job ID");
-        _;
+    constructor(
+        address _owner,
+        address _zkVerifier
+    ) Ownable(_owner) {
+        zkVerifier = IZKVerifier(_zkVerifier);
+        minBounty = 0.01 ether;
+        defaultTimeout = 24 hours;
+        nextJobId = 1;
     }
     
-    constructor(address admin, address zkVerifier) {
-        _grantRole(DEFAULT_ADMIN_ROLE, admin);
-        _grantRole(ADMIN_ROLE, admin);
-        _grantRole(RESOLVER_ROLE, admin);
-        _zkVerifier = zkVerifier;
-    }
-    
-    // Core Job Functions
+    // Core Functions
     function postJob(
-        string calldata specURI,
+        bytes32 modelHash,
+        bytes32 inputHash1,
+        bytes32 inputHash2,
+        bytes calldata encryptedInputs,
         uint256 bounty,
-        address paymentToken,
+        address bountyToken,
         uint256 timeout
-    ) external payable override whenNotPaused nonReentrant returns (uint256 jobId) {
-        require(bounty >= _minBounty, "Bounty too low");
-        require(_supportedTokens[paymentToken] || paymentToken == address(0), "Token not supported");
+    ) external payable override nonReentrant whenNotPaused returns (uint256 jobId) {
+        require(registeredModelHashes[modelHash], "Model hash not registered");
+        require(bounty >= minBounty, "Bounty below minimum");
         require(timeout > 0, "Invalid timeout");
-        
-        _jobCounter++;
-        jobId = _jobCounter;
-        
-        Job storage job = _jobs[jobId];
-        job.id = jobId;
-        job.requester = msg.sender;
-        job.bounty = bounty;
-        job.paymentToken = paymentToken;
-        job.specURI = specURI;
-        job.status = JobStatus.Posted;
-        job.postedAt = block.timestamp;
-        job.timeout = timeout;
+        require(encryptedInputs.length > 0, "Encrypted inputs required");
         
         // Handle payment
-        if (paymentToken == address(0)) {
-            require(msg.value >= bounty, "Insufficient ETH");
+        if (bountyToken == address(0)) {
+            require(msg.value == bounty, "Incorrect ETH amount");
         } else {
-            IERC20(paymentToken).safeTransferFrom(msg.sender, address(this), bounty);
+            require(supportedTokens[bountyToken], "Token not supported");
+            require(msg.value == 0, "No ETH for ERC20 payment");
+            IERC20(bountyToken).safeTransferFrom(msg.sender, address(this), bounty);
         }
         
-        emit JobPosted(jobId, msg.sender, bounty, paymentToken, specURI, timeout);
+        jobId = nextJobId++;
+        
+        jobs[jobId] = Job({
+            id: jobId,
+            client: msg.sender,
+            modelHash: modelHash,
+            inputHash1: inputHash1,
+            inputHash2: inputHash2,
+            encryptedInputs: encryptedInputs,
+            bounty: bounty,
+            bountyToken: bountyToken,
+            timeout: timeout,
+            createdAt: block.timestamp,
+            claimedAt: 0,
+            provider: address(0),
+            completed: false,
+            timedOut: false
+        });
+        
+        allJobIds.push(jobId);
+        clientJobs[msg.sender].push(jobId);
+        
+        emit JobPosted(
+            jobId,
+            msg.sender,
+            modelHash,
+            inputHash1,
+            inputHash2,
+            encryptedInputs,
+            bounty,
+            bountyToken,
+            timeout
+        );
     }
     
-    function claimJob(uint256 jobId) external override whenNotPaused validJob(jobId) {
-        Job storage job = _jobs[jobId];
-        require(job.status == JobStatus.Posted, "Job not available");
-        require(!isJobTimeout(jobId), "Job expired");
+    function claimJob(uint256 jobId) external override nonReentrant whenNotPaused {
+        Job storage job = jobs[jobId];
+        require(job.id != 0, "Job does not exist");
+        require(job.provider == address(0), "Job already claimed");
+        require(!job.completed, "Job already completed");
+        require(!job.timedOut, "Job timed out");
+        require(msg.sender != job.client, "Client cannot claim own job");
         
         job.provider = msg.sender;
-        job.status = JobStatus.Claimed;
         job.claimedAt = block.timestamp;
+        providerJobs[msg.sender].push(jobId);
         
-        emit JobClaimed(jobId, msg.sender, block.timestamp);
+        emit JobClaimed(jobId, msg.sender);
     }
     
     function completeJob(
         uint256 jobId,
-        string calldata resultURI,
-        bytes32 resultHash,
+        bytes calldata encryptedOutput,
         bytes calldata zkProof
-    ) external override whenNotPaused validJob(jobId) {
-        Job storage job = _jobs[jobId];
-        require(job.provider == msg.sender, "Not job provider");
-        require(job.status == JobStatus.Claimed, "Job not claimed");
-        require(!isJobTimeout(jobId), "Job expired");
+    ) external override nonReentrant whenNotPaused {
+        Job storage job = jobs[jobId];
+        require(job.id != 0, "Job does not exist");
+        require(job.provider == msg.sender, "Only provider can complete");
+        require(!job.completed, "Job already completed");
+        require(!job.timedOut, "Job timed out");
+        require(encryptedOutput.length > 0, "Encrypted output required");
+        require(zkProof.length > 0, "ZK proof required");
         
-        // Verify ZK proof if verifier is set
-        if (_zkVerifier != address(0)) {
-            bool proofValid = IZKVerifier(_zkVerifier).verifyProof(zkProof, new bytes32[](0));
-            require(proofValid, "Invalid ZK proof");
-            emit ZKProofVerified(jobId, true, gasleft());
-        }
+        // Verify ZK proof
+        bytes32[] memory inputs = new bytes32[](2);
+        inputs[0] = job.inputHash1;
+        inputs[1] = job.inputHash2;
         
-        job.status = JobStatus.Completed;
-        job.completedAt = block.timestamp;
-        job.resultHash = resultHash;
+        require(
+            zkVerifier.verifyProof(zkProof, inputs),
+            "Invalid ZK proof"
+        );
+        
+        // Mark job as completed
+        job.completed = true;
         
         // Update provider stats
-        ProviderStats storage stats = _providerStats[msg.sender];
+        ProviderStats storage stats = providerStats[msg.sender];
         stats.totalJobs++;
         stats.completedJobs++;
         stats.totalEarnings += job.bounty;
-        stats.lastActive = block.timestamp;
-        stats.reputation += 10; // Increase reputation for successful completion
         
-        // Add to pending rewards
-        _pendingRewards[msg.sender] += job.bounty;
+        if (job.claimedAt > 0) {
+            uint256 responseTime = block.timestamp - job.claimedAt;
+            stats.averageResponseTime = (stats.averageResponseTime * (stats.completedJobs - 1) + responseTime) / stats.completedJobs;
+        }
         
-        emit JobCompleted(jobId, msg.sender, resultURI, resultHash);
-    }
-    
-    function disputeJob(uint256 jobId, string calldata reason) external override whenNotPaused validJob(jobId) {
-        Job storage job = _jobs[jobId];
-        require(job.requester == msg.sender, "Not job requester");
-        require(job.status == JobStatus.Completed, "Job not completed");
+        // Calculate reputation score (simple implementation)
+        stats.reputationScore = (stats.completedJobs * 100) / stats.totalJobs;
         
-        job.status = JobStatus.Disputed;
-        emit JobDisputed(jobId, msg.sender, reason);
-    }
-    
-    function resolveDispute(uint256 jobId, bool favorProvider) external override onlyRole(RESOLVER_ROLE) validJob(jobId) {
-        Job storage job = _jobs[jobId];
-        require(job.status == JobStatus.Disputed, "Job not disputed");
-        
-        if (favorProvider) {
-            job.status = JobStatus.Completed;
+        // Transfer payment to provider
+        if (job.bountyToken == address(0)) {
+            payable(msg.sender).transfer(job.bounty);
         } else {
-            job.status = JobStatus.Failed;
-            // Remove from pending rewards
-            if (_pendingRewards[job.provider] >= job.bounty) {
-                _pendingRewards[job.provider] -= job.bounty;
-            }
-            
-            // Update provider stats
-            ProviderStats storage stats = _providerStats[job.provider];
-            stats.failedJobs++;
-            if (stats.completedJobs > 0) {
-                stats.completedJobs--;
-            }
-            if (stats.totalEarnings >= job.bounty) {
-                stats.totalEarnings -= job.bounty;
-            }
-            if (stats.reputation >= 5) {
-                stats.reputation -= 5;
-            }
+            IERC20(job.bountyToken).safeTransfer(msg.sender, job.bounty);
         }
         
-        emit DisputeResolved(jobId, favorProvider, msg.sender);
+        emit JobCompleted(jobId, msg.sender, encryptedOutput, zkProof);
     }
     
-    // Batch Functions
-    function batchSubmitInputs(
-        uint256 jobId,
-        bytes32[] calldata inputs,
-        uint256 processingFee
-    ) external override whenNotPaused validJob(jobId) returns (uint256 batchId) {
-        Job storage job = _jobs[jobId];
-        require(job.requester == msg.sender, "Not job requester");
+    function handleJobTimeout(uint256 jobId) external override nonReentrant whenNotPaused {
+        Job storage job = jobs[jobId];
+        require(job.id != 0, "Job does not exist");
+        require(!job.completed, "Job already completed");
+        require(!job.timedOut, "Job already timed out");
         
-        batchId = job.batchInputs.length;
-        job.batchInputs.push(BatchInput({
-            inputs: inputs,
-            batchId: batchId,
-            processed: false,
-            processingFee: processingFee
-        }));
-        
-        emit BatchInputsSubmitted(jobId, batchId, inputs, processingFee);
-    }
-    
-    function processBatch(uint256 jobId, uint256 batchId) external override whenNotPaused validJob(jobId) {
-        Job storage job = _jobs[jobId];
-        require(job.provider == msg.sender, "Not job provider");
-        require(batchId < job.batchInputs.length, "Invalid batch ID");
-        require(!job.batchInputs[batchId].processed, "Batch already processed");
-        
-        job.batchInputs[batchId].processed = true;
-        emit BatchProcessed(jobId, batchId);
-    }
-    
-    // Payment Functions
-    function payWithERC20(address token, uint256 amount) external override whenNotPaused {
-        require(_supportedTokens[token], "Token not supported");
-        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
-        _paymentBalances[msg.sender][token] += amount;
-        emit PaymentReceived(token, amount, msg.sender);
-    }
-    
-    function getPaymentBalance(address token) external view override returns (uint256) {
-        return _paymentBalances[msg.sender][token];
-    }
-    
-    function withdrawPayment(address token, uint256 amount) external override nonReentrant {
-        require(_paymentBalances[msg.sender][token] >= amount, "Insufficient balance");
-        _paymentBalances[msg.sender][token] -= amount;
-        
-        if (token == address(0)) {
-            payable(msg.sender).transfer(amount);
+        bool isTimedOut = false;
+        if (job.provider == address(0)) {
+            // Unclaimed job - timeout from creation
+            isTimedOut = block.timestamp >= job.createdAt + job.timeout;
         } else {
-            IERC20(token).safeTransfer(msg.sender, amount);
+            // Claimed job - timeout from claim
+            isTimedOut = block.timestamp >= job.claimedAt + job.timeout;
         }
         
-        emit PaymentWithdrawn(token, amount, msg.sender);
-    }
-    
-    function withdrawBounty(uint256 jobId) external override nonReentrant validJob(jobId) {
-        Job storage job = _jobs[jobId];
-        require(job.requester == msg.sender, "Not job requester");
-        require(job.status == JobStatus.Posted || job.status == JobStatus.Failed, "Cannot withdraw");
-        require(isJobTimeout(jobId) || job.status == JobStatus.Failed, "Job still active");
+        require(isTimedOut, "Job has not timed out yet");
         
-        uint256 bounty = job.bounty;
-        job.bounty = 0;
+        job.timedOut = true;
         
-        if (job.paymentToken == address(0)) {
-            payable(msg.sender).transfer(bounty);
+        // Refund bounty to client
+        if (job.bountyToken == address(0)) {
+            payable(job.client).transfer(job.bounty);
         } else {
-            IERC20(job.paymentToken).safeTransfer(msg.sender, bounty);
-        }
-    }
-    
-    function claimComputeRewards() external override nonReentrant {
-        uint256 rewards = _pendingRewards[msg.sender];
-        require(rewards > 0, "No pending rewards");
-        
-        _pendingRewards[msg.sender] = 0;
-        // Note: This function should be called by the reward distributor
-        // For now, we just emit the event
-        emit ProviderRewardsClaimed(msg.sender, rewards);
-    }
-    
-    function updateProviderScore(address provider, uint256 jobId, bool success) external override onlyRole(ADMIN_ROLE) {
-        ProviderStats storage stats = _providerStats[provider];
-        if (success) {
-            stats.reputation += 10;
-        } else {
-            stats.reputation = stats.reputation > 5 ? stats.reputation - 5 : 0;
-        }
-    }
-    
-    // Admin Functions
-    function setZKVerifier(address verifier) external override onlyRole(ADMIN_ROLE) {
-        _zkVerifier = verifier;
-        emit ZKVerifierUpdated(verifier);
-    }
-    
-    function setJobTimeout(uint256 defaultTimeout) external override onlyRole(ADMIN_ROLE) {
-        _defaultTimeout = defaultTimeout;
-    }
-    
-    function setMinBounty(uint256 amount) external override onlyRole(ADMIN_ROLE) {
-        _minBounty = amount;
-    }
-    
-    function setSupportedModelTypes(string[] calldata modelTypes) external override onlyRole(ADMIN_ROLE) {
-        // TODO: Implement model type validation
-    }
-    
-    function setSupportedTokens(address[] calldata tokens) external override onlyRole(ADMIN_ROLE) {
-        // Clear existing tokens
-        for (uint256 i = 0; i < _supportedTokensList.length; i++) {
-            _supportedTokens[_supportedTokensList[i]] = false;
+            IERC20(job.bountyToken).safeTransfer(job.client, job.bounty);
         }
         
-        // Set new tokens
-        delete _supportedTokensList;
-        for (uint256 i = 0; i < tokens.length; i++) {
-            _supportedTokens[tokens[i]] = true;
-            _supportedTokensList.push(tokens[i]);
-        }
+        emit JobTimedOut(jobId, job.client);
+    }
+    
+    // Model Management
+    function registerModelHash(bytes32 modelHash) external override {
+        require(!registeredModelHashes[modelHash], "Model hash already registered");
         
-        emit SupportedTokensUpdated(tokens);
+        registeredModelHashes[modelHash] = true;
+        modelHashRegistrants[modelHash] = msg.sender;
+        
+        emit ModelHashRegistered(modelHash, msg.sender);
     }
     
-    // Pausable functions
-    function pause() external onlyRole(ADMIN_ROLE) {
-        _pause();
+    function isModelHashRegistered(bytes32 modelHash) external view override returns (bool) {
+        return registeredModelHashes[modelHash];
     }
     
-    function unpause() external onlyRole(ADMIN_ROLE) {
-        _unpause();
+    function getModelHashRegistrant(bytes32 modelHash) external view override returns (address) {
+        return modelHashRegistrants[modelHash];
     }
     
     // View Functions
-    function getJob(uint256 jobId) external view override validJob(jobId) returns (Job memory) {
-        return _jobs[jobId];
+    function getJob(uint256 jobId) external view override returns (Job memory) {
+        return jobs[jobId];
+    }
+    
+    function getJobsByClient(address client) external view override returns (uint256[] memory) {
+        return clientJobs[client];
+    }
+    
+    function getJobsByProvider(address provider) external view override returns (uint256[] memory) {
+        return providerJobs[provider];
     }
     
     function getProviderStats(address provider) external view override returns (ProviderStats memory) {
-        return _providerStats[provider];
+        return providerStats[provider];
     }
     
-    function getActiveJobs() external view override returns (uint256[] memory) {
-        uint256[] memory activeJobs = new uint256[](_jobCounter);
-        uint256 count = 0;
+    function getAllJobs() external view override returns (Job[] memory) {
+        Job[] memory allJobs = new Job[](allJobIds.length);
+        for (uint256 i = 0; i < allJobIds.length; i++) {
+            allJobs[i] = jobs[allJobIds[i]];
+        }
+        return allJobs;
+    }
+    
+    function getAvailableJobs() external view override returns (Job[] memory) {
+        uint256 availableCount = 0;
         
-        for (uint256 i = 1; i <= _jobCounter; i++) {
-            if (_jobs[i].status == JobStatus.Posted || _jobs[i].status == JobStatus.Claimed) {
-                activeJobs[count] = i;
-                count++;
+        // Count available jobs
+        for (uint256 i = 0; i < allJobIds.length; i++) {
+            Job memory job = jobs[allJobIds[i]];
+            if (job.provider == address(0) && !job.completed && !job.timedOut) {
+                availableCount++;
             }
         }
         
-        // Resize array
-        uint256[] memory result = new uint256[](count);
-        for (uint256 i = 0; i < count; i++) {
-            result[i] = activeJobs[i];
-        }
+        // Create array of available jobs
+        Job[] memory availableJobs = new Job[](availableCount);
+        uint256 index = 0;
         
-        return result;
-    }
-    
-    function getProviderJobs(address provider) external view override returns (uint256[] memory) {
-        uint256[] memory providerJobs = new uint256[](_jobCounter);
-        uint256 count = 0;
-        
-        for (uint256 i = 1; i <= _jobCounter; i++) {
-            if (_jobs[i].provider == provider) {
-                providerJobs[count] = i;
-                count++;
+        for (uint256 i = 0; i < allJobIds.length; i++) {
+            Job memory job = jobs[allJobIds[i]];
+            if (job.provider == address(0) && !job.completed && !job.timedOut) {
+                availableJobs[index] = job;
+                index++;
             }
         }
         
-        // Resize array
-        uint256[] memory result = new uint256[](count);
-        for (uint256 i = 0; i < count; i++) {
-            result[i] = providerJobs[i];
-        }
-        
-        return result;
+        return availableJobs;
     }
     
-    function getRequesterJobs(address requester) external view override returns (uint256[] memory) {
-        uint256[] memory requesterJobs = new uint256[](_jobCounter);
-        uint256 count = 0;
-        
-        for (uint256 i = 1; i <= _jobCounter; i++) {
-            if (_jobs[i].requester == requester) {
-                requesterJobs[count] = i;
-                count++;
+    // Admin Functions
+    function setSupportedTokens(address[] calldata tokens) external override onlyOwner {
+        // Clear existing supported tokens
+        for (uint256 i = 0; i < allJobIds.length; i++) {
+            Job memory job = jobs[allJobIds[i]];
+            if (job.bountyToken != address(0)) {
+                supportedTokens[job.bountyToken] = false;
             }
         }
         
-        // Resize array
-        uint256[] memory result = new uint256[](count);
-        for (uint256 i = 0; i < count; i++) {
-            result[i] = requesterJobs[i];
+        // Set new supported tokens
+        for (uint256 i = 0; i < tokens.length; i++) {
+            supportedTokens[tokens[i]] = true;
         }
-        
-        return result;
     }
     
-    function getPendingRewards(address provider) external view override returns (uint256) {
-        return _pendingRewards[provider];
+    function isSupportedToken(address token) external view override returns (bool) {
+        return supportedTokens[token];
     }
     
-    function getTotalJobCount() external view override returns (uint256) {
-        return _jobCounter;
+    function setMinBounty(uint256 newMinBounty) external override onlyOwner {
+        minBounty = newMinBounty;
     }
     
-    function isJobTimeout(uint256 jobId) public view override validJob(jobId) returns (bool) {
-        Job storage job = _jobs[jobId];
-        return block.timestamp > job.postedAt + job.timeout;
+    function getMinBounty() external view override returns (uint256) {
+        return minBounty;
     }
     
-    function getSupportedTokens() external view override returns (address[] memory) {
-        return _supportedTokensList;
+    function setJobTimeout(uint256 newTimeout) external override onlyOwner {
+        require(newTimeout > 0, "Invalid timeout");
+        defaultTimeout = newTimeout;
     }
     
-    function isTokenSupported(address token) external view override returns (bool) {
-        return _supportedTokens[token];
+    function getJobTimeout() external view override returns (uint256) {
+        return defaultTimeout;
     }
     
-    function getBatchInputs(uint256 jobId) external view override validJob(jobId) returns (BatchInput[] memory) {
-        return _jobs[jobId].batchInputs;
+    function pause() external override onlyOwner {
+        _pause();
+    }
+    
+    function unpause() external override onlyOwner {
+        _unpause();
+    }
+    
+    function setZKVerifier(address _zkVerifier) external onlyOwner {
+        require(_zkVerifier != address(0), "Invalid verifier address");
+        zkVerifier = IZKVerifier(_zkVerifier);
+    }
+    
+    // Emergency Functions
+    function emergencyWithdraw(address token) external override onlyOwner {
+        if (token == address(0)) {
+            payable(owner()).transfer(address(this).balance);
+        } else {
+            IERC20(token).safeTransfer(owner(), IERC20(token).balanceOf(address(this)));
+        }
     }
 } 
