@@ -66,13 +66,10 @@ interface IComputeMarketplace {
     // Core Functions
     function postJob(
         bytes32 modelHash,
-        bytes32 inputHash1,
-        bytes32 inputHash2,
-        bytes calldata encryptedInputs,
+        bytes32 inputHash,
         uint256 bounty,
-        address bountyToken,
         uint256 timeout
-    ) external payable returns (uint256 jobId);
+    ) external;
     
     function claimJob(uint256 jobId) external;
     
