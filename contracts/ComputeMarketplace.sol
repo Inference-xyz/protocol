@@ -20,7 +20,14 @@ contract ComputeMarketplace is Ownable {
         address paymentToken;
     }
 
-    event JobPosted(uint256 indexed jobId, address indexed client, bytes32 indexed modelHash, bytes32[] inputHashes, uint256 paymentAmount, address paymentToken);
+    event JobPosted(
+        uint256 indexed jobId,
+        address indexed client,
+        bytes32 indexed modelHash,
+        bytes32[] inputHashes,
+        uint256 paymentAmount,
+        address paymentToken
+    );
     event JobClaimed(uint256 indexed jobId, address indexed provider);
     event JobCompleted(uint256 indexed jobId, address indexed provider, bytes encryptedOutput, bytes zkProof);
     event ModelHashRegistered(bytes32 indexed modelHash, address indexed registrant);
@@ -44,12 +51,10 @@ contract ComputeMarketplace is Ownable {
         emit ModelHashRegistered(modelHash, msg.sender);
     }
 
-    function postJob(
-        bytes32 modelHash, 
-        bytes32[] calldata inputHashes, 
-        uint256 paymentAmount, 
-        address paymentToken
-    ) external returns (uint256 jobId) {
+    function postJob(bytes32 modelHash, bytes32[] calldata inputHashes, uint256 paymentAmount, address paymentToken)
+        external
+        returns (uint256 jobId)
+    {
         require(registeredModelHashes[modelHash], "Model not registered");
         require(inputHashes.length > 0, "Must provide at least one input hash");
         require(paymentAmount > 0, "Payment amount must be greater than 0");
@@ -83,7 +88,12 @@ contract ComputeMarketplace is Ownable {
         emit JobClaimed(jobId, msg.sender);
     }
 
-    function completeJob(uint256 jobId, bytes calldata encryptedOutput, bytes calldata zkProof, uint256[] calldata publicInputs) external {
+    function completeJob(
+        uint256 jobId,
+        bytes calldata encryptedOutput,
+        bytes calldata zkProof,
+        uint256[] calldata publicInputs
+    ) external {
         Job storage job = jobs[jobId];
         require(job.id != 0, "Invalid job");
         require(msg.sender == job.provider, "Not job provider");
@@ -95,10 +105,10 @@ contract ComputeMarketplace is Ownable {
         require(isValid, "Invalid ZK proof");
 
         job.completed = true;
-        
+
         // Release payment to provider
         IERC20(job.paymentToken).transfer(job.provider, job.paymentAmount);
-        
+
         emit JobCompleted(jobId, msg.sender, encryptedOutput, zkProof);
         emit PaymentReleased(jobId, job.provider, job.paymentAmount, job.paymentToken);
     }

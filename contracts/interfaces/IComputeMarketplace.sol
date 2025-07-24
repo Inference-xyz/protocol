@@ -14,29 +14,15 @@ interface IComputeMarketplace {
         address bountyToken,
         uint256 timeout
     );
-    
-    event JobClaimed(
-        uint256 indexed jobId,
-        address indexed provider
-    );
-    
-    event JobCompleted(
-        uint256 indexed jobId,
-        address indexed provider,
-        bytes encryptedOutput,
-        bytes zkProof
-    );
-    
-    event JobTimedOut(
-        uint256 indexed jobId,
-        address indexed client
-    );
-    
-    event ModelHashRegistered(
-        bytes32 indexed modelHash,
-        address indexed registrant
-    );
-    
+
+    event JobClaimed(uint256 indexed jobId, address indexed provider);
+
+    event JobCompleted(uint256 indexed jobId, address indexed provider, bytes encryptedOutput, bytes zkProof);
+
+    event JobTimedOut(uint256 indexed jobId, address indexed client);
+
+    event ModelHashRegistered(bytes32 indexed modelHash, address indexed registrant);
+
     // Structs
     struct Job {
         uint256 id;
@@ -54,7 +40,7 @@ interface IComputeMarketplace {
         bool completed;
         bool timedOut;
     }
-    
+
     struct ProviderStats {
         uint256 totalJobs;
         uint256 completedJobs;
@@ -62,30 +48,21 @@ interface IComputeMarketplace {
         uint256 averageResponseTime;
         uint256 reputationScore;
     }
-    
+
     // Core Functions
-    function postJob(
-        bytes32 modelHash,
-        bytes32 inputHash,
-        uint256 bounty,
-        uint256 timeout
-    ) external;
-    
+    function postJob(bytes32 modelHash, bytes32 inputHash, uint256 bounty, uint256 timeout) external;
+
     function claimJob(uint256 jobId) external;
-    
-    function completeJob(
-        uint256 jobId,
-        bytes calldata encryptedOutput,
-        bytes calldata zkProof
-    ) external;
-    
+
+    function completeJob(uint256 jobId, bytes calldata encryptedOutput, bytes calldata zkProof) external;
+
     function handleJobTimeout(uint256 jobId) external;
-    
+
     // Model Management
     function registerModelHash(bytes32 modelHash) external;
     function isModelHashRegistered(bytes32 modelHash) external view returns (bool);
     function getModelHashRegistrant(bytes32 modelHash) external view returns (address);
-    
+
     // View Functions
     function getJob(uint256 jobId) external view returns (Job memory);
     function getJobsByClient(address client) external view returns (uint256[] memory);
@@ -93,7 +70,7 @@ interface IComputeMarketplace {
     function getProviderStats(address provider) external view returns (ProviderStats memory);
     function getAllJobs() external view returns (Job[] memory);
     function getAvailableJobs() external view returns (Job[] memory);
-    
+
     // Admin Functions
     function setSupportedTokens(address[] calldata tokens) external;
     function isSupportedToken(address token) external view returns (bool);
@@ -103,7 +80,7 @@ interface IComputeMarketplace {
     function getJobTimeout() external view returns (uint256);
     function pause() external;
     function unpause() external;
-    
+
     // Emergency Functions
     function emergencyWithdraw(address token) external;
-} 
+}
