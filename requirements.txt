@@ -1,0 +1,4 @@
+torch>=2.0.0
+onnxruntime>=1.15.0
+pysha3>=1.0.2
+numpy>=1.21.0 
