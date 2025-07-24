@@ -1,14 +1,18 @@
 import { ethers } from 'ethers';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as dotenv from 'dotenv';
+
+// Load environment variables from .env file
+dotenv.config();
 
 const CONFIG = {
     RPC_URL: process.env.RPC_URL || 'http://localhost:8545',
-    CLIENT_PRIVATE_KEY: '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80',
-    PROVIDER_PRIVATE_KEY: '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d',
+    CLIENT_PRIVATE_KEY: process.env.CLIENT_PRIVATE_KEY,
+    PROVIDER_PRIVATE_KEY: process.env.PROVIDER_PRIVATE_KEY,
     MARKETPLACE_ADDRESS: process.env.MARKETPLACE_ADDRESS || '',
     TOKEN_ADDRESS: process.env.TOKEN_ADDRESS || '',
-    PAYMENT_AMOUNT: ethers.parseEther('100')
+    PAYMENT_AMOUNT: process.env.PAYMENT_AMOUNT ? BigInt(process.env.PAYMENT_AMOUNT) : ethers.parseEther('100')
 };
 
 class NonceManager {
@@ -56,8 +60,8 @@ class ComputeMarketplaceDemo {
         this.provider = new ethers.JsonRpcProvider(CONFIG.RPC_URL);
         this.nonceManager = new NonceManager(this.provider);
         
-        this.clientWallet = new ethers.Wallet(CONFIG.CLIENT_PRIVATE_KEY, this.provider);
-        this.providerWallet = new ethers.Wallet(CONFIG.PROVIDER_PRIVATE_KEY, this.provider);
+        this.clientWallet = new ethers.Wallet(CONFIG.CLIENT_PRIVATE_KEY!, this.provider);
+        this.providerWallet = new ethers.Wallet(CONFIG.PROVIDER_PRIVATE_KEY!, this.provider);
         
         this.clientWallet.getNonce = async () => {
             return await this.nonceManager.getNonce(this.clientWallet.address);

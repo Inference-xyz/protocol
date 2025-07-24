@@ -2,17 +2,29 @@
 
 set -e
 
+# Load environment variables from .env file if it exists
+if [ -f ".env" ]; then
+    echo "📄 Loading environment variables from .env file"
+    export $(cat .env | grep -v '^#' | xargs)
+else
+    echo "⚠️  No .env file found. Using default values."
+    echo "   Copy config.env.example to .env and update values if needed."
+fi
+
 echo "🚀 Compute Marketplace Demo"
 echo "=========================="
 
 # Check if anvil is running
-if ! lsof -i :8545 > /dev/null 2>&1; then
-    echo "❌ Anvil is not running on port 8545"
-    echo "Please start anvil with: anvil"
+ANVIL_PORT=${ANVIL_PORT:-8545}
+ANVIL_HOST=${ANVIL_HOST:-localhost}
+
+if ! lsof -i :$ANVIL_PORT > /dev/null 2>&1; then
+    echo "❌ Anvil is not running on port $ANVIL_PORT"
+    echo "Please start anvil with: anvil --port $ANVIL_PORT"
     exit 1
 fi
 
-echo "✅ Anvil is running"
+echo "✅ Anvil is running on port $ANVIL_PORT"
 
 # Build contracts
 echo "🔨 Building contracts..."
@@ -20,7 +32,10 @@ forge build
 
 # Deploy contracts
 echo "🚀 Deploying contracts..."
-DEPLOY_OUTPUT=$(forge script scripts/Deploy.s.sol --rpc-url http://localhost:8545 --broadcast --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 2>&1)
+RPC_URL=${RPC_URL:-http://localhost:8545}
+CLIENT_PRIVATE_KEY=${CLIENT_PRIVATE_KEY}
+
+DEPLOY_OUTPUT=$(forge script scripts/Deploy.s.sol --rpc-url $RPC_URL --broadcast --private-key $CLIENT_PRIVATE_KEY 2>&1)
 
 # Extract contract addresses
 MARKETPLACE_ADDRESS=$(echo "$DEPLOY_OUTPUT" | grep "ComputeMarketplace deployed at:" | awk '{print $4}')
@@ -43,6 +58,8 @@ cd ../..
 
 # Run demo
 echo "🎬 Running demo..."
-MARKETPLACE_ADDRESS=$MARKETPLACE_ADDRESS TOKEN_ADDRESS=$TOKEN_ADDRESS npm run demo
+export MARKETPLACE_ADDRESS=$MARKETPLACE_ADDRESS
+export TOKEN_ADDRESS=$TOKEN_ADDRESS
+npm run demo
 
 echo "�� Demo completed!" 

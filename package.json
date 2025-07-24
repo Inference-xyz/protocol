@@ -18,20 +18,20 @@
   "author": "Inference Protocol Team",
   "license": "MIT",
   "devDependencies": {
+    "@typechain/ethers-v6": "^0.5.0",
     "@types/chai": "^4.3.0",
     "@types/mocha": "^10.0.0",
     "@types/node": "^20.0.0",
-    "@typechain/ethers-v6": "^0.5.0",
     "chai": "^4.3.0",
     "ethers": "^6.8.0",
     "hardhat": "^2.19.0",
     "mocha": "^10.0.0",
     "ts-node": "^10.9.0",
+    "tsx": "^4.6.0",
     "typechain": "^8.3.0",
-    "typescript": "^5.0.0",
-    "tsx": "^4.6.0"
+    "typescript": "^5.0.0"
   },
   "dependencies": {
-    "dotenv": "^16.3.0"
+    "dotenv": "^16.6.1"
   }
-} 
+}

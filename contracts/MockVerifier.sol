@@ -8,4 +8,4 @@ contract MockVerifier is IHalo2Verifier {
     function verifyProof(bytes calldata proof, uint256[] calldata instances) external pure returns (bool) {
         return true;
     }
-} 
+}
