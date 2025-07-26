@@ -8,27 +8,27 @@ interface IContest {
         Finalized,
         Cancelled
     }
-    
+
     struct ContestInfo {
         address creator;
         string metadataURI;
         RewardSplit rewardSplit;
         uint256 startTime;
-        uint256 duration;           // 0 for everlasting contests
+        uint256 duration; // 0 for everlasting contests
         uint256 currentEpoch;
         ContestStatus status;
         bool isEverlasting;
         address validatorSet;
         address scoringVerifier;
     }
-    
+
     struct RewardSplit {
-        uint256 ownerPct;        // Contest owner percentage
-        uint256 participantPct;  // Participant rewards percentage
-        uint256 validatorPct;    // Validator set percentage
-        uint256 totalPct;        // Must equal 10000
+        uint256 ownerPct; // Contest owner percentage
+        uint256 participantPct; // Participant rewards percentage
+        uint256 validatorPct; // Validator set percentage
+        uint256 totalPct; // Must equal 10000
     }
-    
+
     struct Participant {
         address account;
         uint256 joinedAt;
@@ -38,7 +38,7 @@ interface IContest {
         bool isActive;
         uint256 stakedAmount;
     }
-    
+
     struct EpochResult {
         uint256 epoch;
         address[] winners;
@@ -47,7 +47,7 @@ interface IContest {
         uint256 timestamp;
         bytes32 resultHash;
     }
-    
+
     struct ZKSubmission {
         bytes32[] inputs;
         bytes32[] outputs;
@@ -56,7 +56,7 @@ interface IContest {
         uint256 timestamp;
         bool verified;
     }
-    
+
     struct ScoringSubmission {
         address[] participants;
         uint256[] scores;
@@ -65,7 +65,7 @@ interface IContest {
         uint256 epoch;
         bool verified;
     }
-    
+
     // Initialization
     function initialize(
         address creator,
@@ -74,37 +74,37 @@ interface IContest {
         uint256 duration,
         bool isEverlasting
     ) external;
-    
+
     // Participation Functions
     function joinContest() external payable;
     function leaveContest() external;
     function submitEntry(bytes32 submissionHash, string calldata metadataURI) external;
-    
+
     function submitZKProof(bytes32[] calldata inputs, bytes32[] calldata outputs, bytes calldata proof) external;
     function submitScores(address[] calldata participants, uint256[] calldata scores, bytes calldata proof) external;
-    
+
     // Epoch Management (for everlasting contests)
     function finalizeEpoch() external; // Now uses ZK proofs and validator weights
     function startNewEpoch() external; // Start new epoch for everlasting contests
-    
+
     // Contest Finalization (for temporary contests)
     function finalizeContest(address[] calldata winners, uint256[] calldata rewards, bytes32 resultHash) external;
-    
+
     // Reward Management
     function claimReward() external;
     function claimCreatorFee() external;
     function distributeEpochRewards(uint256 amount) external;
-    
+
     function setRewardSplit(uint256 ownerPct, uint256 participantPct, uint256 validatorPct) external;
     function setValidatorSet(address validatorSet) external;
     function setScoringVerifier(address verifier) external;
-    
+
     // Admin Functions
     function pause() external;
     function unpause() external;
     function updateMetadata(string calldata newMetadataURI) external;
     function setMinimumScore(uint256 score) external;
-    
+
     // View Functions
     function getContestInfo() external view returns (ContestInfo memory);
     function getParticipant(address account) external view returns (Participant memory);
@@ -116,12 +116,12 @@ interface IContest {
     function isParticipant(address account) external view returns (bool);
     function getPerformanceRank() external view returns (uint256); // Get contest performance rank (for slot replacement)
     function isActive() external view returns (bool);
-    
+
     function getWeightedRewards() external view returns (uint256[] memory);
     function getZKSubmission(address participant, uint256 epoch) external view returns (ZKSubmission memory);
     function getScoringSubmission(uint256 epoch) external view returns (ScoringSubmission memory);
     function getRewardSplit() external view returns (RewardSplit memory);
-    
+
     // Events
     event ContestInitialized(address indexed creator, string metadataURI, bool isEverlasting);
     event ParticipantJoined(address indexed participant, uint256 timestamp);
@@ -134,10 +134,10 @@ interface IContest {
     event ContestPaused();
     event ContestUnpaused();
     event EpochRewardsDistributed(uint256 indexed epoch, uint256 amount);
-    
+
     event ZKProofSubmitted(address indexed participant, uint256 indexed epoch, bytes32[] inputs, bytes32[] outputs);
     event ScoresSubmitted(uint256 indexed epoch, address[] participants, uint256[] scores);
     event RewardSplitUpdated(uint256 ownerPct, uint256 participantPct, uint256 validatorPct);
     event ValidatorSetUpdated(address indexed validatorSet);
     event ScoringVerifierUpdated(address indexed verifier);
-} 
+}
