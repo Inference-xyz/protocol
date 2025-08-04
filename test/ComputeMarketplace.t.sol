@@ -2,70 +2,216 @@
 pragma solidity ^0.8.19;
 
 import "forge-std/Test.sol";
-import "../contracts/ComputeMarketplace.sol";
+import "../contracts/ModelRegistry.sol";
 import "../contracts/InfToken.sol";
-import "../contracts/MockVerifier.sol";
 
-contract ComputeMarketplaceTest is Test {
-    ComputeMarketplace public marketplace;
-    InfToken public token;
-    MockVerifier public verifier;
+contract ModelRegistryTest is Test {
+    ModelRegistry public modelRegistry;
+    InfToken public infToken;
 
-    address public client = address(0x101);
-    address public provider = address(0x102);
+    address public deployer1 = address(0x1);
+    address public deployer2 = address(0x2);
+    address public user = address(0x3);
 
-    bytes32 public constant MODEL_HASH = keccak256("test_model");
-    bytes32[] public inputHashes;
-    uint256 public constant PAYMENT_AMOUNT = 100 ether;
+    bytes32 constant MODEL_HASH_1 = bytes32(uint256(0x123456789));
+    bytes32 constant MODEL_HASH_2 = bytes32(uint256(0x987654321));
+    string constant METADATA_URI_1 = "ipfs://model-metadata-1";
+    string constant METADATA_URI_2 = "ipfs://model-metadata-2";
 
     function setUp() public {
-        verifier = new MockVerifier();
-        token = new InfToken();
-        marketplace = new ComputeMarketplace(address(verifier));
-
-        inputHashes.push(keccak256("input1"));
-
-        token.transfer(client, PAYMENT_AMOUNT * 10);
-
-        vm.prank(client);
-        token.approve(address(marketplace), PAYMENT_AMOUNT * 10);
+        modelRegistry = new ModelRegistry();
+        infToken = new InfToken();
     }
 
-    function testRegisterModelHash() public {
-        marketplace.registerModelHash(MODEL_HASH);
-        assertTrue(marketplace.registeredModelHashes(MODEL_HASH));
+    function testRegisterModel() public {
+        vm.prank(deployer1);
+        modelRegistry.registerModel(MODEL_HASH_1, METADATA_URI_1);
+
+        // Verify model was registered
+        assertTrue(modelRegistry.isModelRegistered(MODEL_HASH_1));
+        assertTrue(modelRegistry.isModelActive(MODEL_HASH_1));
+
+        ModelRegistry.ModelInfo memory modelInfo = modelRegistry.getModelInfo(MODEL_HASH_1);
+        assertEq(modelInfo.modelHash, MODEL_HASH_1);
+        assertEq(modelInfo.deployer, deployer1);
+        assertEq(modelInfo.metadataURI, METADATA_URI_1);
+        assertTrue(modelInfo.isActive);
+        assertEq(modelInfo.usageCount, 0);
     }
 
-    function testPostJob() public {
-        marketplace.registerModelHash(MODEL_HASH);
+    function testRegisterModelRevert() public {
+        // Test invalid model hash
+        vm.prank(deployer1);
+        vm.expectRevert("Invalid model hash");
+        modelRegistry.registerModel(bytes32(0), METADATA_URI_1);
 
-        vm.prank(client);
-        uint256 jobId = marketplace.postJob(MODEL_HASH, inputHashes, PAYMENT_AMOUNT, address(token));
+        // Test empty metadata URI
+        vm.prank(deployer1);
+        vm.expectRevert("Empty metadata URI");
+        modelRegistry.registerModel(MODEL_HASH_1, "");
 
-        assertEq(jobId, 1);
-        assertEq(marketplace.nextJobId(), 2);
+        // Register model first time
+        vm.prank(deployer1);
+        modelRegistry.registerModel(MODEL_HASH_1, METADATA_URI_1);
+
+        // Test duplicate registration
+        vm.prank(deployer2);
+        vm.expectRevert("Model already registered");
+        modelRegistry.registerModel(MODEL_HASH_1, METADATA_URI_2);
     }
 
-    function testClaimAndCompleteJob() public {
-        marketplace.registerModelHash(MODEL_HASH);
+    function testDeactivateModel() public {
+        // Register model
+        vm.prank(deployer1);
+        modelRegistry.registerModel(MODEL_HASH_1, METADATA_URI_1);
 
-        vm.prank(client);
-        uint256 jobId = marketplace.postJob(MODEL_HASH, inputHashes, PAYMENT_AMOUNT, address(token));
+        // Deactivate model
+        vm.prank(deployer1);
+        modelRegistry.deactivateModel(MODEL_HASH_1);
 
-        vm.prank(provider);
-        marketplace.claimJob(jobId);
+        // Verify model was deactivated
+        assertFalse(modelRegistry.isModelActive(MODEL_HASH_1));
+        assertTrue(modelRegistry.isModelRegistered(MODEL_HASH_1));
 
-        bytes memory encryptedOutput = "encrypted_output";
-        bytes memory zkProof = "zk_proof";
-        uint256[] memory publicInputs = new uint256[](1);
-        publicInputs[0] = uint256(keccak256("public_input"));
+        // Try to deactivate again
+        vm.prank(deployer1);
+        vm.expectRevert("Model already inactive");
+        modelRegistry.deactivateModel(MODEL_HASH_1);
+    }
 
-        uint256 providerBalanceBefore = token.balanceOf(provider);
+    function testDeactivateModelRevert() public {
+        // Test deactivating non-existent model
+        vm.prank(deployer1);
+        vm.expectRevert("Model not registered");
+        modelRegistry.deactivateModel(MODEL_HASH_1);
 
-        vm.prank(provider);
-        marketplace.completeJob(jobId, encryptedOutput, zkProof, publicInputs);
+        // Register model
+        vm.prank(deployer1);
+        modelRegistry.registerModel(MODEL_HASH_1, METADATA_URI_1);
 
-        uint256 providerBalanceAfter = token.balanceOf(provider);
-        assertEq(providerBalanceAfter, providerBalanceBefore + PAYMENT_AMOUNT);
+        // Test deactivating with different deployer
+        vm.prank(deployer2);
+        vm.expectRevert("Only deployer or owner can deactivate");
+        modelRegistry.deactivateModel(MODEL_HASH_1);
+    }
+
+    function testRecordModelUsage() public {
+        // Register model
+        vm.prank(deployer1);
+        modelRegistry.registerModel(MODEL_HASH_1, METADATA_URI_1);
+
+        // Record usage
+        vm.prank(user);
+        modelRegistry.recordModelUsage(MODEL_HASH_1);
+
+        // Verify usage was recorded
+        ModelRegistry.ModelInfo memory modelInfo = modelRegistry.getModelInfo(MODEL_HASH_1);
+        assertEq(modelInfo.usageCount, 1);
+
+        // Record usage again
+        vm.prank(user);
+        modelRegistry.recordModelUsage(MODEL_HASH_1);
+
+        modelInfo = modelRegistry.getModelInfo(MODEL_HASH_1);
+        assertEq(modelInfo.usageCount, 2);
+    }
+
+    function testRecordModelUsageRevert() public {
+        // Test recording usage for non-existent model
+        vm.prank(user);
+        vm.expectRevert("Model not registered");
+        modelRegistry.recordModelUsage(MODEL_HASH_1);
+
+        // Register and deactivate model
+        vm.prank(deployer1);
+        modelRegistry.registerModel(MODEL_HASH_1, METADATA_URI_1);
+
+        vm.prank(deployer1);
+        modelRegistry.deactivateModel(MODEL_HASH_1);
+
+        // Test recording usage for inactive model
+        vm.prank(user);
+        vm.expectRevert("Model is inactive");
+        modelRegistry.recordModelUsage(MODEL_HASH_1);
+    }
+
+    function testGetDeployerModels() public {
+        // Register models from different deployers
+        vm.prank(deployer1);
+        modelRegistry.registerModel(MODEL_HASH_1, METADATA_URI_1);
+
+        vm.prank(deployer2);
+        modelRegistry.registerModel(MODEL_HASH_2, METADATA_URI_2);
+
+        // Get deployer1's models
+        bytes32[] memory deployer1Models = modelRegistry.getDeployerModels(deployer1);
+        assertEq(deployer1Models.length, 1);
+        assertEq(deployer1Models[0], MODEL_HASH_1);
+
+        // Get deployer2's models
+        bytes32[] memory deployer2Models = modelRegistry.getDeployerModels(deployer2);
+        assertEq(deployer2Models.length, 1);
+        assertEq(deployer2Models[0], MODEL_HASH_2);
+    }
+
+    function testGetAllModels() public {
+        // Register multiple models
+        vm.prank(deployer1);
+        modelRegistry.registerModel(MODEL_HASH_1, METADATA_URI_1);
+
+        vm.prank(deployer2);
+        modelRegistry.registerModel(MODEL_HASH_2, METADATA_URI_2);
+
+        // Get all models
+        bytes32[] memory allModels = modelRegistry.getAllModels();
+        assertEq(allModels.length, 2);
+        assertEq(allModels[0], MODEL_HASH_1);
+        assertEq(allModels[1], MODEL_HASH_2);
+    }
+
+    function testGetActiveModels() public {
+        // Register models
+        vm.prank(deployer1);
+        modelRegistry.registerModel(MODEL_HASH_1, METADATA_URI_1);
+
+        vm.prank(deployer2);
+        modelRegistry.registerModel(MODEL_HASH_2, METADATA_URI_2);
+
+        // Deactivate one model
+        vm.prank(deployer1);
+        modelRegistry.deactivateModel(MODEL_HASH_1);
+
+        // Get active models
+        bytes32[] memory activeModels = modelRegistry.getActiveModels();
+        assertEq(activeModels.length, 1);
+        assertEq(activeModels[0], MODEL_HASH_2);
+    }
+
+    function testGetModelCount() public {
+        assertEq(modelRegistry.getModelCount(), 0);
+
+        vm.prank(deployer1);
+        modelRegistry.registerModel(MODEL_HASH_1, METADATA_URI_1);
+
+        assertEq(modelRegistry.getModelCount(), 1);
+
+        vm.prank(deployer2);
+        modelRegistry.registerModel(MODEL_HASH_2, METADATA_URI_2);
+
+        assertEq(modelRegistry.getModelCount(), 2);
+    }
+
+    function testGetActiveModelCount() public {
+        assertEq(modelRegistry.getActiveModelCount(), 0);
+
+        vm.prank(deployer1);
+        modelRegistry.registerModel(MODEL_HASH_1, METADATA_URI_1);
+
+        assertEq(modelRegistry.getActiveModelCount(), 1);
+
+        vm.prank(deployer1);
+        modelRegistry.deactivateModel(MODEL_HASH_1);
+
+        assertEq(modelRegistry.getActiveModelCount(), 0);
     }
 }

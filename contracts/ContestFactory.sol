@@ -4,27 +4,53 @@ pragma solidity ^0.8.19;
 import "./interfaces/IContestFactory.sol";
 import "./interfaces/IContest.sol";
 import "./InfToken.sol";
+import "./ModelRegistry.sol";
+import "./ZKVerifierRegistry.sol";
 import "@openzeppelin/contracts/proxy/Clones.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
 contract ContestFactory is IContestFactory, Ownable {
     address public contestTemplate;
     address public infToken;
+    address public modelRegistry;
+    address public verifierRegistry;
     address[] public createdContests;
     mapping(address => address[]) public contestsByCreator;
     mapping(address => bool) public validContests;
     
-    constructor(address _contestTemplate, address _infToken) Ownable(msg.sender) {
+    constructor(
+        address _contestTemplate, 
+        address _infToken,
+        address _modelRegistry,
+        address _verifierRegistry
+    ) Ownable(msg.sender) {
         require(_contestTemplate != address(0), "Invalid template");
         require(_infToken != address(0), "Invalid InfToken");
+        require(_modelRegistry != address(0), "Invalid model registry");
+        require(_verifierRegistry != address(0), "Invalid verifier registry");
+        
         contestTemplate = _contestTemplate;
         infToken = _infToken;
+        modelRegistry = _modelRegistry;
+        verifierRegistry = _verifierRegistry;
     }
     
-    function createContest(ContestConfig calldata config) external override returns (address contestAddress) {
+    function createContest(IContestFactory.ContestConfig calldata config) external override returns (address contestAddress) {
         require(bytes(config.metadataURI).length > 0, "Empty metadata URI");
+        require(config.duration > 0 || config.duration == 0, "Invalid duration"); // 0 = everlasting
+        require(config.epochDuration > 0, "Epoch duration must be positive");
         require(config.scoringModelHash != bytes32(0), "Invalid scoring model hash");
         require(config.validators.length > 0, "Must have at least one validator");
+        require(config.rewardAmount > 0, "Must provide reward amount");
+        
+        // Verify scoring model hash exists in verifier registry
+        require(
+            ZKVerifierRegistry(verifierRegistry).isVerifierActive(config.scoringModelHash),
+            "Scoring model not registered or inactive"
+        );
+        
+        // Transfer rewards from creator to factory
+        InfToken(infToken).transferFrom(msg.sender, address(this), config.rewardAmount);
         
         // Clone the contest template
         contestAddress = Clones.clone(contestTemplate);
@@ -34,12 +60,18 @@ contract ContestFactory is IContestFactory, Ownable {
             msg.sender,
             config.metadataURI,
             config.duration,
+            config.epochDuration,
             config.scoringModelHash,
+            modelRegistry,
+            verifierRegistry,
             config.validators
         );
         
         // Set InfToken for the contest
         IContest(contestAddress).setInfToken(infToken);
+        
+        // Transfer rewards to contest
+        InfToken(infToken).transfer(contestAddress, config.rewardAmount);
         
         // Track the created contest
         createdContests.push(contestAddress);
@@ -51,8 +83,10 @@ contract ContestFactory is IContestFactory, Ownable {
             msg.sender, 
             config.metadataURI, 
             config.duration,
+            config.epochDuration,
             config.scoringModelHash,
-            config.validators
+            config.validators,
+            config.rewardAmount
         );
     }
     
@@ -62,9 +96,19 @@ contract ContestFactory is IContestFactory, Ownable {
         emit ContestTemplateUpdated(template);
     }
     
-    function setInfToken(address _infToken) external onlyOwner {
+    function setInfToken(address _infToken) external override onlyOwner {
         require(_infToken != address(0), "Invalid InfToken");
         infToken = _infToken;
+    }
+    
+    function setModelRegistry(address _modelRegistry) external override onlyOwner {
+        require(_modelRegistry != address(0), "Invalid model registry");
+        modelRegistry = _modelRegistry;
+    }
+    
+    function setVerifierRegistry(address _verifierRegistry) external override onlyOwner {
+        require(_verifierRegistry != address(0), "Invalid verifier registry");
+        verifierRegistry = _verifierRegistry;
     }
     
     // View Functions
@@ -80,15 +124,7 @@ contract ContestFactory is IContestFactory, Ownable {
         return validContests[contest];
     }
     
-    function getContestTemplate() external view override returns (address) {
-        return contestTemplate;
-    }
-    
-    function getTotalContestsCreated() external view override returns (uint256) {
+    function getContestCount() external view override returns (uint256) {
         return createdContests.length;
-    }
-    
-    function getInfToken() external view returns (address) {
-        return infToken;
     }
 } 

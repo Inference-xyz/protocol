@@ -4,34 +4,35 @@ pragma solidity ^0.8.19;
 interface IContestFactory {
     struct ContestConfig {
         string metadataURI;
-        uint256 duration; // Contest duration in seconds (0 for everlasting)
-        bytes32 scoringModelHash; // Hash of the scoring model for ZK verification
-        address[] validators; // Array of validator addresses
+        uint256 duration;
+        uint256 epochDuration;
+        bytes32 scoringModelHash;
+        address[] validators;
+        uint256 rewardAmount; // Pre-funded reward amount
     }
 
-    // Core Functions
     function createContest(ContestConfig calldata config) external returns (address contestAddress);
-
-    // Management Functions
     function setContestTemplate(address template) external;
     function setInfToken(address _infToken) external;
+    function setModelRegistry(address _modelRegistry) external;
+    function setVerifierRegistry(address _verifierRegistry) external;
 
     // View Functions
     function getCreatedContests() external view returns (address[] memory);
     function getContestsByCreator(address creator) external view returns (address[] memory);
     function isValidContest(address contest) external view returns (bool);
-    function getContestTemplate() external view returns (address);
-    function getTotalContestsCreated() external view returns (uint256);
-    function getInfToken() external view returns (address);
+    function getContestCount() external view returns (uint256);
 
     // Events
     event ContestCreated(
-        address indexed contestAddress, 
-        address indexed creator, 
-        string metadataURI, 
+        address indexed contestAddress,
+        address indexed creator,
+        string metadataURI,
         uint256 duration,
+        uint256 epochDuration,
         bytes32 scoringModelHash,
-        address[] validators
+        address[] validators,
+        uint256 rewardAmount
     );
-    event ContestTemplateUpdated(address indexed newTemplate);
+    event ContestTemplateUpdated(address indexed template);
 }
