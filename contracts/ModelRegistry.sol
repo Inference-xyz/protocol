@@ -2,12 +2,15 @@
 pragma solidity ^0.8.19;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "./ZKVerifierRegistry.sol";
+import "./interfaces/IModelRegistry.sol";
 
 /**
  * @title ModelRegistry
  * @dev Permissionless registry for AI model architectures
  */
-contract ModelRegistry is Ownable {
+contract ModelRegistry is IModelRegistry, Ownable {
+    ZKVerifierRegistry public verifierRegistry;
     struct ModelInfo {
         bytes32 modelHash;
         address deployer;
@@ -31,16 +34,31 @@ contract ModelRegistry is Ownable {
     event ModelUsed(bytes32 indexed modelHash, address indexed user);
 
     constructor() Ownable(msg.sender) {}
+    
+    function setVerifierRegistry(address _verifierRegistry) external onlyOwner {
+        require(_verifierRegistry != address(0), "Invalid verifier registry");
+        verifierRegistry = ZKVerifierRegistry(_verifierRegistry);
+    }
 
     /**
      * @dev Register a new model architecture (permissionless)
      * @param modelHash Hash of the model architecture
      * @param metadataURI URI containing model metadata (architecture info, input/output shapes, etc.)
      */
-    function registerModel(bytes32 modelHash, string calldata metadataURI) external {
+    function registerModel(
+        bytes32 modelHash, 
+        string calldata metadataURI,
+        bytes calldata zkProof,
+        uint256[] calldata publicInputs
+    ) external {
         require(modelHash != bytes32(0), "Invalid model hash");
         require(!isModelRegistered(modelHash), "Model already registered");
         require(bytes(metadataURI).length > 0, "Empty metadata URI");
+        require(zkProof.length > 0, "Missing ZK proof");
+        require(address(verifierRegistry) != address(0), "Verifier registry not set");
+
+        bool isValid = verifierRegistry.verifyProof(modelHash, zkProof, publicInputs);
+        require(isValid, "Invalid ZK proof for model registration");
 
         models[modelHash] = ModelInfo({
             modelHash: modelHash,

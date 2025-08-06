@@ -2,20 +2,20 @@
 pragma solidity ^0.8.19;
 
 import "./interfaces/IContest.sol";
+import "./interfaces/IEpochWeightCalculator.sol";
 import "./InfToken.sol";
 import "./ModelRegistry.sol";
 import "./ZKVerifierRegistry.sol";
 import "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 contract Contest is IContest, Initializable, Ownable {
     ContestInfo public contestInfo;
     mapping(address => Participant) public participants;
     mapping(address => uint256) public claimableRewards;
-    mapping(address => bool) public validators;
     address[] public participantsList;
-    address[] public validatorsList;
     
     // Epoch management
     mapping(uint256 => EpochInfo) public epochs;
@@ -23,6 +23,20 @@ contract Contest is IContest, Initializable, Ownable {
     mapping(uint256 => ScoringSubmission[]) public epochScoringSubmissions;
     mapping(uint256 => mapping(address => mapping(bytes32 => bool))) public hasSubmittedInference; // epoch -> participant -> inputHash -> bool
     mapping(uint256 => mapping(address => mapping(bytes32 => mapping(address => bool)))) public hasSubmittedScoring; // epoch -> scorer -> inputHash -> participant -> bool
+    
+    // Participant scores tracking per epoch
+    mapping(uint256 => mapping(address => uint256[])) public participantEpochScores; // epoch -> participant -> scores array
+    
+    // Validator rewards tracking
+    mapping(uint256 => mapping(address => uint256)) public validatorScores; // epoch -> validator -> score count
+    mapping(uint256 => address[]) public epochValidators; // epoch -> validators who participated
+    uint256 public validatorRewardRatio = 10; // 10% default, in basis points (100 = 1%)
+    
+    // Reward distribution contract
+    address public rewardDistributor;
+    
+    // Epoch weight calculator contract
+    IEpochWeightCalculator public epochWeightCalculator;
     
     Winner[] public winners;
     
@@ -47,11 +61,6 @@ contract Contest is IContest, Initializable, Ownable {
         _;
     }
     
-    modifier onlyValidator() {
-        require(validators[msg.sender], "Only validators can call this");
-        _;
-    }
-
     constructor() Ownable(msg.sender) {}
     
     function initialize(
@@ -61,12 +70,10 @@ contract Contest is IContest, Initializable, Ownable {
         uint256 epochDuration,
         bytes32 scoringModelHash,
         address _modelRegistry,
-        address _verifierRegistry,
-        address[] calldata initialValidators
+        address _verifierRegistry
     ) external override initializer {
         require(!initialized, "Already initialized");
         require(creator != address(0), "Invalid creator");
-        require(initialValidators.length > 0, "Must have at least one validator");
         require(_modelRegistry != address(0), "Invalid model registry");
         require(_verifierRegistry != address(0), "Invalid verifier registry");
         require(epochDuration > 0, "Epoch duration must be positive");
@@ -86,20 +93,11 @@ contract Contest is IContest, Initializable, Ownable {
             totalRewards: 0,
             participantCount: 0,
             scoringModelHash: scoringModelHash,
-            validators: new address[](0),
             currentEpoch: 0,
             epochDuration: epochDuration,
             modelRegistry: _modelRegistry,
             verifierRegistry: _verifierRegistry
         });
-        
-        // Add initial validators
-        for (uint256 i = 0; i < initialValidators.length; i++) {
-            require(initialValidators[i] != address(0), "Invalid validator");
-            validators[initialValidators[i]] = true;
-            validatorsList.push(initialValidators[i]);
-        }
-        contestInfo.validators = validatorsList;
         
         // Create initial epoch
         _createNewEpoch();
@@ -114,45 +112,63 @@ contract Contest is IContest, Initializable, Ownable {
             epochDuration,
             scoringModelHash, 
             _modelRegistry,
-            _verifierRegistry,
-            initialValidators
+            _verifierRegistry
         );
     }
 
-    function setInfToken(address _infToken) external {
+    function setInfToken(address _infToken) external onlyCreator {
         require(_infToken != address(0), "Invalid InfToken");
         infToken = InfToken(_infToken);
     }
     
-    function addValidator(address validator) external override onlyCreator {
-        require(validator != address(0), "Invalid validator");
-        require(!validators[validator], "Already a validator");
-        
-        validators[validator] = true;
-        validatorsList.push(validator);
-        contestInfo.validators = validatorsList;
-        
-        emit ValidatorAdded(validator);
+    function setValidatorRewardRatio(uint256 _ratio) external onlyCreator {
+        require(_ratio <= 500, "Ratio cannot exceed 50%"); // Max 50% for validators
+        require(_ratio > 0, "Ratio must be positive");
+        validatorRewardRatio = _ratio;
+        emit ValidatorRewardRatioUpdated(_ratio);
     }
     
-    function removeValidator(address validator) external override onlyCreator {
-        require(validators[validator], "Not a validator");
-        require(validatorsList.length > 1, "Cannot remove last validator");
+    function setRewardDistributor(address _rewardDistributor) external onlyCreator {
+        require(_rewardDistributor != address(0), "Invalid reward distributor");
+        rewardDistributor = _rewardDistributor;
+        emit RewardDistributorUpdated(_rewardDistributor);
+    }
+    
+    function setEpochWeightCalculator(address _epochWeightCalculator) external onlyCreator {
+        require(_epochWeightCalculator != address(0), "Invalid epoch weight calculator");
+        epochWeightCalculator = IEpochWeightCalculator(_epochWeightCalculator);
+        emit EpochWeightCalculatorUpdated(_epochWeightCalculator);
+    }
+    w
+    // Internal function to get participants who submitted in this epoch
+    function _getEpochParticipants(uint256 epochNumber) internal view returns (address[] memory) {
+        uint256 participantCount = 0;
         
-        validators[validator] = false;
-        
-        // Remove from validatorsList
-        for (uint256 i = 0; i < validatorsList.length; i++) {
-            if (validatorsList[i] == validator) {
-                validatorsList[i] = validatorsList[validatorsList.length - 1];
-                validatorsList.pop();
-                break;
+        // First pass: count participants
+        for (uint256 i = 0; i < participantsList.length; i++) {
+            address participant = participantsList[i];
+            if (participants[participant].isActive && 
+                participantEpochScores[epochNumber][participant].length > 0) {
+                participantCount++;
             }
         }
-        contestInfo.validators = validatorsList;
         
-        emit ValidatorRemoved(validator);
+        // Second pass: collect participants
+        address[] memory epochParticipants = new address[](participantCount);
+        uint256 index = 0;
+        for (uint256 i = 0; i < participantsList.length; i++) {
+            address participant = participantsList[i];
+            if (participants[participant].isActive && 
+                participantEpochScores[epochNumber][participant].length > 0) {
+                epochParticipants[index] = participant;
+                index++;
+            }
+        }
+        
+        return epochParticipants;
     }
+    
+
     
     function joinContest() external override onlyActive {
         require(!participants[msg.sender].isActive, "Already a participant");
@@ -274,6 +290,9 @@ contract Contest is IContest, Initializable, Ownable {
         // Record model usage
         modelRegistry.recordModelUsage(modelHash);
         
+        bool isValid = verifierRegistry.verifyProof(modelHash, zkProof, publicInputs);
+        require(isValid, "Invalid ZK proof");
+        
         // Create submission
         InferenceSubmission memory submission = InferenceSubmission({
             participant: msg.sender,
@@ -283,7 +302,7 @@ contract Contest is IContest, Initializable, Ownable {
             outputHash: outputHash,
             zkProof: zkProof,
             timestamp: block.timestamp,
-            verified: false // Will be verified when scoring is submitted
+            scored: false
         });
         
         epochInferenceSubmissions[epochNumber].push(submission);
@@ -340,17 +359,30 @@ contract Contest is IContest, Initializable, Ownable {
             scores: scores,
             zkProof: zkProof,
             timestamp: block.timestamp,
-            verified: true
+            scored: true
         });
         
         epochScoringSubmissions[epochNumber].push(scoringSubmission);
         hasSubmittedScoring[epochNumber][msg.sender][inputHash][participant] = true;
         epochs[epochNumber].totalScores++;
         
-        // Mark corresponding inference as verified
-        epochInferenceSubmissions[epochNumber][inferenceIndex].verified = true;
+        // Track validator participation and scores
+        if (validatorScores[epochNumber][msg.sender] == 0) {
+            // First time this validator is scoring in this epoch
+            epochValidators[epochNumber].push(msg.sender);
+        }
+        validatorScores[epochNumber][msg.sender]++;
         
-        // Update participant score (simple average for now)
+        // Mark corresponding inference as scored
+        epochInferenceSubmissions[epochNumber][inferenceIndex].scored = true;
+        
+        // Store scores in epoch array for participant
+        for (uint256 i = 0; i < scores.length; i++) {
+            participantEpochScores[epochNumber][participant].push(scores[i]);
+        }
+        
+        // Update participant score (will be calculated by epoch function later)
+        // For now, keep simple average as fallback
         uint256 avgScore = 0;
         for (uint256 i = 0; i < scores.length; i++) {
             avgScore += scores[i];
@@ -363,13 +395,92 @@ contract Contest is IContest, Initializable, Ownable {
         emit ScoringVerified(msg.sender, epochNumber, true, address(this));
     }
     
-    function finalizeEpoch(uint256 epochNumber) external override onlyCreator {
+    function finalizeEpoch(uint256 epochNumber) external override {
         require(epochNumber <= contestInfo.currentEpoch, "Invalid epoch number");
         require(!epochs[epochNumber].finalized, "Epoch already finalized");
+        require(address(epochWeightCalculator) != address(0), "Epoch weight calculator not set");
         
         epochs[epochNumber].finalized = true;
         
+        // Get epoch participants and their scores
+        address[] memory participants = _getEpochParticipants(epochNumber);
+        uint256[][] memory epochScores = new uint256[][](participants.length);
+        
+        for (uint256 i = 0; i < participants.length; i++) {
+            epochScores[i] = participantEpochScores[epochNumber][participants[i]];
+        }
+        
+        // Call contest-owner-defined epoch function
+        IEpochWeightCalculator.ParticipantWeight[] memory weights = 
+            epochWeightCalculator.calculateEpochWeights(epochNumber, participants, epochScores);
+        
+        // Update participant scores with calculated weights
+        for (uint256 i = 0; i < weights.length; i++) {
+            participants[weights[i].participant].score = weights[i].weight;
+        }
+        
+        // Distribute rewards based on weights
+        _distributeEpochRewards(epochNumber, weights);
+        
+        // Distribute validator rewards for this epoch
+        _distributeValidatorRewards(epochNumber);
+        
         emit EpochFinalized(epochNumber, epochs[epochNumber].totalSubmissions, epochs[epochNumber].totalScores);
+    }
+    
+    function _distributeEpochRewards(uint256 epochNumber, IEpochWeightCalculator.ParticipantWeight[] memory weights) internal {
+        uint256 epochRewards = epochs[epochNumber].totalRewards;
+        uint256 totalWeight = 0;
+        
+        // Calculate total weight
+        for (uint256 i = 0; i < weights.length; i++) {
+            totalWeight += weights[i].weight;
+        }
+        
+        // Distribute rewards based on weights
+        for (uint256 i = 0; i < weights.length; i++) {
+            if (weights[i].weight > 0 && totalWeight > 0) {
+                uint256 reward = (epochRewards * weights[i].weight) / totalWeight;
+                if (reward > 0) {
+                    SafeERC20.safeTransfer(IERC20(address(infToken)), weights[i].participant, reward);
+                    participants[weights[i].participant].totalRewards += reward;
+                    emit ParticipantRewarded(weights[i].participant, epochNumber, reward, weights[i].weight);
+                }
+            }
+        }
+    }
+    
+    function _distributeValidatorRewards(uint256 epochNumber) internal {
+        address[] memory validators = epochValidators[epochNumber];
+        uint256 totalScores = epochs[epochNumber].totalScores;
+        
+        if (validators.length == 0 || totalScores == 0) {
+            return;
+        }
+        
+        // Calculate validator reward pool based on configurable ratio
+        uint256 epochRewards = epochs[epochNumber].totalRewards;
+        uint256 validatorRewardPool = (epochRewards * validatorRewardRatio) / 1000; // basis points
+        uint256 totalValidatorScores = 0;
+        
+        // Calculate total validator scores
+        for (uint256 i = 0; i < validators.length; i++) {
+            totalValidatorScores += validatorScores[epochNumber][validators[i]];
+        }
+        
+        // Distribute rewards proportionally
+        for (uint256 i = 0; i < validators.length; i++) {
+            address validator = validators[i];
+            uint256 validatorScore = validatorScores[epochNumber][validator];
+            
+            if (validatorScore > 0 && totalValidatorScores > 0) {
+                uint256 reward = (validatorRewardPool * validatorScore) / totalValidatorScores;
+                if (reward > 0) {
+                    SafeERC20.safeTransfer(IERC20(address(infToken)), validator, reward);
+                    emit ValidatorRewarded(validator, epochNumber, reward, validatorScore);
+                }
+            }
+        }
     }
     
     function finalizeContest() external override onlyCreator {
@@ -416,16 +527,17 @@ contract Contest is IContest, Initializable, Ownable {
         emit ContestUnpaused();
     }
     
-    function distributeRewards(uint256 amount) external override onlyCreator {
-        require(amount > 0, "No rewards to distribute");
-        require(address(infToken) != address(0), "InfToken not set");
-        require(contestInfo.status == ContestStatus.Active, "Contest not active");
+    function receiveRewards(uint256 amount) external override {
+        require(msg.sender == rewardDistributor, "Only reward distributor can call this");
         
-        // Transfer tokens from creator to contract
-        infToken.transferFrom(msg.sender, address(this), amount);
+        // For finite contests, always epoch 1. For infinite contests, use current epoch
+        uint256 targetEpoch = contestInfo.duration == 0 ? contestInfo.currentEpoch : 1;
         
+        // Update the reward pool for the target epoch
+        epochs[targetEpoch].totalRewards += amount;
         contestInfo.totalRewards += amount;
-        emit RewardsDistributed(amount);
+        
+        emit RewardsReceived(amount, targetEpoch);
     }
     
     function calculateWinners() public view override returns (Winner[] memory) {
@@ -540,12 +652,38 @@ contract Contest is IContest, Initializable, Ownable {
                block.timestamp < contestInfo.startTime + contestInfo.duration;
     }
 
-    function getValidators() external view override returns (address[] memory) {
-        return validatorsList;
+    // Validator reward functions
+    function getValidatorScore(uint256 epochNumber, address validator) external view returns (uint256) {
+        return validatorScores[epochNumber][validator];
     }
-
-    function isValidator(address validator) external view override returns (bool) {
-        return validators[validator];
+    
+    function getEpochValidators(uint256 epochNumber) external view returns (address[] memory) {
+        return epochValidators[epochNumber];
+    }
+    
+    function getValidatorRewardPool(uint256 epochNumber) external view returns (uint256) {
+        uint256 epochRewards = epochs[epochNumber].totalRewards;
+        return (epochRewards * validatorRewardRatio) / 1000; // basis points
+    }
+    
+    function getValidatorRewardRatio() external view returns (uint256) {
+        return validatorRewardRatio;
+    }
+    
+    function getRewardDistributor() external view returns (address) {
+        return rewardDistributor;
+    }
+    
+    function getParticipantEpochScores(uint256 epochNumber, address participant) external view returns (uint256[] memory) {
+        return participantEpochScores[epochNumber][participant];
+    }
+    
+    function getEpochParticipants(uint256 epochNumber) external view returns (address[] memory) {
+        return _getEpochParticipants(epochNumber);
+    }
+    
+    function getEpochWeightCalculator() external view returns (address) {
+        return address(epochWeightCalculator);
     }
 
     function getParticipantCount() external view returns (uint256) {

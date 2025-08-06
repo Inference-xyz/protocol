@@ -8,7 +8,7 @@ interface IContestFactory {
         uint256 epochDuration;
         bytes32 scoringModelHash;
         address[] validators;
-        uint256 rewardAmount; // Pre-funded reward amount
+        uint256 initialRewardAmount; // Optional pre-funded reward amount
     }
 
     function createContest(ContestConfig calldata config) external returns (address contestAddress);
@@ -32,7 +32,7 @@ interface IContestFactory {
         uint256 epochDuration,
         bytes32 scoringModelHash,
         address[] validators,
-        uint256 rewardAmount
+        uint256 initialRewardAmount
     );
     event ContestTemplateUpdated(address indexed template);
 }

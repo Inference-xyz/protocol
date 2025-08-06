@@ -40,17 +40,12 @@ contract ContestFactory is IContestFactory, Ownable {
         require(config.duration > 0 || config.duration == 0, "Invalid duration"); // 0 = everlasting
         require(config.epochDuration > 0, "Epoch duration must be positive");
         require(config.scoringModelHash != bytes32(0), "Invalid scoring model hash");
-        require(config.validators.length > 0, "Must have at least one validator");
-        require(config.rewardAmount > 0, "Must provide reward amount");
         
         // Verify scoring model hash exists in verifier registry
         require(
             ZKVerifierRegistry(verifierRegistry).isVerifierActive(config.scoringModelHash),
             "Scoring model not registered or inactive"
         );
-        
-        // Transfer rewards from creator to factory
-        InfToken(infToken).transferFrom(msg.sender, address(this), config.rewardAmount);
         
         // Clone the contest template
         contestAddress = Clones.clone(contestTemplate);
@@ -63,15 +58,11 @@ contract ContestFactory is IContestFactory, Ownable {
             config.epochDuration,
             config.scoringModelHash,
             modelRegistry,
-            verifierRegistry,
-            config.validators
+            verifierRegistry
         );
         
         // Set InfToken for the contest
         IContest(contestAddress).setInfToken(infToken);
-        
-        // Transfer rewards to contest
-        InfToken(infToken).transfer(contestAddress, config.rewardAmount);
         
         // Track the created contest
         createdContests.push(contestAddress);
@@ -85,8 +76,8 @@ contract ContestFactory is IContestFactory, Ownable {
             config.duration,
             config.epochDuration,
             config.scoringModelHash,
-            config.validators,
-            config.rewardAmount
+
+            config.initialRewardAmount
         );
     }
     

@@ -41,6 +41,7 @@ interface IContest {
         bool finalized;
         uint256 totalSubmissions;
         uint256 totalScores;
+        uint256 totalRewards;
     }
 
     struct InferenceSubmission {
@@ -51,7 +52,7 @@ interface IContest {
         bytes32 outputHash;
         bytes zkProof;
         uint256 timestamp;
-        bool verified;
+        bool scored;
     }
 
     struct ScoringSubmission {
@@ -63,7 +64,7 @@ interface IContest {
         uint256[] scores;
         bytes zkProof;
         uint256 timestamp;
-        bool verified;
+        bool scored;
     }
 
     struct Winner {
@@ -80,16 +81,14 @@ interface IContest {
         uint256 epochDuration,
         bytes32 scoringModelHash,
         address modelRegistry,
-        address verifierRegistry,
-        address[] calldata validators
+        address verifierRegistry
     ) external;
 
     // Token Setup
     function setInfToken(address _infToken) external;
-
-    // Validator Management
-    function addValidator(address validator) external;
-    function removeValidator(address validator) external;
+    function setValidatorRewardRatio(uint256 _ratio) external;
+    function setRewardDistributor(address _rewardDistributor) external;
+    function setEpochWeightCalculator(address _epochWeightCalculator) external;
 
     // Participation Functions
     function joinContest() external;
@@ -126,7 +125,7 @@ interface IContest {
     function unpause() external;
 
     // Reward Management
-    function distributeRewards(uint256 amount) external;
+    function receiveRewards(uint256 amount) external;
 
     // View Functions
     function getContestInfo() external view returns (ContestInfo memory);
@@ -140,9 +139,13 @@ interface IContest {
     function getClaimableRewards(address participant) external view returns (uint256);
     function isParticipant(address account) external view returns (bool);
     function isActive() external view returns (bool);
-    function getValidators() external view returns (address[] memory);
-    function isValidator(address validator) external view returns (bool);
+
     function calculateWinners() external view returns (Winner[] memory);
+    function getValidatorRewardRatio() external view returns (uint256);
+    function getRewardDistributor() external view returns (address);
+    function getParticipantEpochScores(uint256 epochNumber, address participant) external view returns (uint256[] memory);
+    function getEpochParticipants(uint256 epochNumber) external view returns (address[] memory);
+    function getEpochWeightCalculator() external view returns (address);
 
     // Events
     event ContestInitialized(
@@ -152,8 +155,7 @@ interface IContest {
         uint256 epochDuration,
         bytes32 scoringModelHash,
         address modelRegistry,
-        address verifierRegistry,
-        address[] validators
+        address verifierRegistry
     );
     event ParticipantJoined(address indexed participant, uint256 timestamp);
     event ParticipantLeft(address indexed participant, uint256 timestamp);
@@ -182,7 +184,10 @@ interface IContest {
     event ContestFinalized(Winner[] winners, uint256 totalDistributed);
     event ContestPaused();
     event ContestUnpaused();
-    event RewardsDistributed(uint256 amount);
-    event ValidatorAdded(address indexed validator);
-    event ValidatorRemoved(address indexed validator);
+    event RewardsReceived(uint256 amount, uint256 epochNumber);
+    event RewardDistributorUpdated(address indexed newDistributor);
+    event ValidatorRewarded(address indexed validator, uint256 indexed epochNumber, uint256 reward, uint256 scoreCount);
+    event ValidatorRewardRatioUpdated(uint256 newRatio);
+    event ParticipantRewarded(address indexed participant, uint256 indexed epochNumber, uint256 reward, uint256 weight);
+    event EpochWeightCalculatorUpdated(address indexed newCalculator);
 }
