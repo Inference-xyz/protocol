@@ -12,132 +12,182 @@ interface IContest {
     struct ContestInfo {
         address creator;
         string metadataURI;
-        RewardSplit rewardSplit;
         uint256 startTime;
         uint256 duration; // 0 for everlasting contests
-        uint256 currentEpoch;
         ContestStatus status;
-        bool isEverlasting;
-        address validatorSet;
-        address scoringVerifier;
-    }
-
-    struct RewardSplit {
-        uint256 ownerPct; // Contest owner percentage
-        uint256 participantPct; // Participant rewards percentage
-        uint256 validatorPct; // Validator set percentage
-        uint256 totalPct; // Must equal 10000
+        uint256 totalRewards;
+        uint256 participantCount;
+        bytes32 scoringModelHash;
+        address[] validators;
+        uint256 currentEpoch;
+        uint256 epochDuration;
+        address modelRegistry;
+        address verifierRegistry;
     }
 
     struct Participant {
         address account;
         uint256 joinedAt;
-        uint256 currentScore;
         uint256 totalRewards;
-        uint256 lastSubmissionTime;
         bool isActive;
-        uint256 stakedAmount;
+        uint256 score;
     }
 
-    struct EpochResult {
-        uint256 epoch;
-        address[] winners;
-        uint256[] rewards;
-        uint256 totalDistributed;
-        uint256 timestamp;
-        bytes32 resultHash;
+    struct EpochInfo {
+        uint256 epochNumber;
+        uint256 startTime;
+        uint256 endTime;
+        bytes32[] inputHashes;
+        bool finalized;
+        uint256 totalSubmissions;
+        uint256 totalScores;
+        uint256 totalRewards;
     }
 
-    struct ZKSubmission {
-        bytes32[] inputs;
-        bytes32[] outputs;
-        bytes proof;
+    struct InferenceSubmission {
+        address participant;
+        uint256 epochNumber;
+        bytes32 inputHash;
         bytes32 modelHash;
+        bytes32 outputHash;
+        bytes zkProof;
         uint256 timestamp;
-        bool verified;
+        bool scored;
     }
 
     struct ScoringSubmission {
-        address[] participants;
+        address scorer;
+        uint256 epochNumber;
+        bytes32 inputHash;
+        address participant;
+        bytes32 outputHash;
         uint256[] scores;
-        bytes proof;
-        bytes32 scoringModelHash;
-        uint256 epoch;
-        bool verified;
+        bytes zkProof;
+        uint256 timestamp;
+        bool scored;
+    }
+
+    struct Winner {
+        address participant;
+        uint256 score;
+        uint256 reward;
     }
 
     // Initialization
     function initialize(
         address creator,
         string calldata metadataURI,
-        uint256 creatorFeePct,
         uint256 duration,
-        bool isEverlasting
+        uint256 epochDuration,
+        bytes32 scoringModelHash,
+        address modelRegistry,
+        address verifierRegistry
     ) external;
 
+    // Token Setup
+    function setInfToken(address _infToken) external;
+    function setValidatorRewardRatio(uint256 _ratio) external;
+    function setRewardDistributor(address _rewardDistributor) external;
+    function setEpochWeightCalculator(address _epochWeightCalculator) external;
+
     // Participation Functions
-    function joinContest() external payable;
+    function joinContest() external;
     function leaveContest() external;
-    function submitEntry(bytes32 submissionHash, string calldata metadataURI) external;
 
-    function submitZKProof(bytes32[] calldata inputs, bytes32[] calldata outputs, bytes calldata proof) external;
-    function submitScores(address[] calldata participants, uint256[] calldata scores, bytes calldata proof) external;
+    // Epoch Management
+    function postInputHashes(bytes32[] calldata inputHashes) external;
+    function startNewEpoch() external;
+    function finalizeEpoch(uint256 epochNumber) external;
 
-    // Epoch Management (for everlasting contests)
-    function finalizeEpoch() external; // Now uses ZK proofs and validator weights
-    function startNewEpoch() external; // Start new epoch for everlasting contests
+    // Submission Functions
+    function submitInference(
+        uint256 epochNumber,
+        bytes32 inputHash,
+        bytes32 modelHash,
+        bytes32 outputHash,
+        bytes calldata zkProof,
+        uint256[] calldata publicInputs
+    ) external;
 
-    // Contest Finalization (for temporary contests)
-    function finalizeContest(address[] calldata winners, uint256[] calldata rewards, bytes32 resultHash) external;
+    function submitScoring(
+        uint256 epochNumber,
+        bytes32 inputHash,
+        address participant,
+        bytes32 outputHash,
+        uint256[] calldata scores,
+        bytes calldata zkProof,
+        uint256[] calldata publicInputs
+    ) external;
 
-    // Reward Management
-    function claimReward() external;
-    function claimCreatorFee() external;
-    function distributeEpochRewards(uint256 amount) external;
-
-    function setRewardSplit(uint256 ownerPct, uint256 participantPct, uint256 validatorPct) external;
-    function setValidatorSet(address validatorSet) external;
-    function setScoringVerifier(address verifier) external;
-
-    // Admin Functions
+    // Contest Management
+    function finalizeContest() external;
     function pause() external;
     function unpause() external;
-    function updateMetadata(string calldata newMetadataURI) external;
-    function setMinimumScore(uint256 score) external;
+
+    // Reward Management
+    function receiveRewards(uint256 amount) external;
 
     // View Functions
     function getContestInfo() external view returns (ContestInfo memory);
     function getParticipant(address account) external view returns (Participant memory);
-    function getEpochResult(uint256 epoch) external view returns (EpochResult memory);
     function getParticipants() external view returns (address[] memory);
+    function getEpochInfo(uint256 epochNumber) external view returns (EpochInfo memory);
     function getCurrentEpoch() external view returns (uint256);
+    function getInferenceSubmissions(uint256 epochNumber) external view returns (InferenceSubmission[] memory);
+    function getScoringSubmissions(uint256 epochNumber) external view returns (ScoringSubmission[] memory);
+    function getWinners() external view returns (Winner[] memory);
     function getClaimableRewards(address participant) external view returns (uint256);
-    function getClaimableCreatorFee() external view returns (uint256);
     function isParticipant(address account) external view returns (bool);
-    function getPerformanceRank() external view returns (uint256); // Get contest performance rank (for slot replacement)
     function isActive() external view returns (bool);
 
-    function getWeightedRewards() external view returns (uint256[] memory);
-    function getZKSubmission(address participant, uint256 epoch) external view returns (ZKSubmission memory);
-    function getScoringSubmission(uint256 epoch) external view returns (ScoringSubmission memory);
-    function getRewardSplit() external view returns (RewardSplit memory);
+    function calculateWinners() external view returns (Winner[] memory);
+    function getValidatorRewardRatio() external view returns (uint256);
+    function getRewardDistributor() external view returns (address);
+    function getParticipantEpochScores(uint256 epochNumber, address participant) external view returns (uint256[] memory);
+    function getEpochParticipants(uint256 epochNumber) external view returns (address[] memory);
+    function getEpochWeightCalculator() external view returns (address);
 
     // Events
-    event ContestInitialized(address indexed creator, string metadataURI, bool isEverlasting);
+    event ContestInitialized(
+        address indexed creator,
+        string metadataURI,
+        uint256 duration, 
+        uint256 epochDuration,
+        bytes32 scoringModelHash,
+        address modelRegistry,
+        address verifierRegistry
+    );
     event ParticipantJoined(address indexed participant, uint256 timestamp);
     event ParticipantLeft(address indexed participant, uint256 timestamp);
-    event EntrySubmitted(address indexed participant, bytes32 submissionHash, string metadataURI);
-    event EpochFinalized(uint256 indexed epoch, address[] winners, uint256[] rewards, uint256 totalDistributed);
-    event ContestFinalized(address[] winners, uint256[] rewards, uint256 totalDistributed);
-    event RewardClaimed(address indexed participant, uint256 amount);
-    event CreatorFeeClaimed(address indexed creator, uint256 amount);
+    event EpochStarted(uint256 indexed epochNumber, uint256 startTime, uint256 endTime);
+    event InputHashesPosted(uint256 indexed epochNumber, bytes32[] inputHashes);
+    event InferenceSubmitted(
+        address indexed participant,
+        uint256 indexed epochNumber,
+        bytes32 inputHash,
+        bytes32 modelHash,
+        bytes32 outputHash,
+        uint256 timestamp
+    );
+    event ScoringSubmitted(
+        address indexed scorer,
+        uint256 indexed epochNumber,
+        bytes32 inputHash,
+        address participant,
+        bytes32 outputHash,
+        uint256[] scores,
+        uint256 timestamp
+    );
+    event InferenceVerified(address indexed participant, uint256 epochNumber, bool success, address verifier);
+    event ScoringVerified(address indexed scorer, uint256 epochNumber, bool success, address verifier);
+    event EpochFinalized(uint256 indexed epochNumber, uint256 totalSubmissions, uint256 totalScores);
+    event ContestFinalized(Winner[] winners, uint256 totalDistributed);
     event ContestPaused();
     event ContestUnpaused();
-    event EpochRewardsDistributed(uint256 indexed epoch, uint256 amount);
-
-    event ZKProofSubmitted(address indexed participant, uint256 indexed epoch, bytes32[] inputs, bytes32[] outputs);
-    event ScoresSubmitted(uint256 indexed epoch, address[] participants, uint256[] scores);
-    event RewardSplitUpdated(uint256 ownerPct, uint256 participantPct, uint256 validatorPct);
-    event ValidatorSetUpdated(address indexed validatorSet);
-    event ScoringVerifierUpdated(address indexed verifier);
+    event RewardsReceived(uint256 amount, uint256 epochNumber);
+    event RewardDistributorUpdated(address indexed newDistributor);
+    event ValidatorRewarded(address indexed validator, uint256 indexed epochNumber, uint256 reward, uint256 scoreCount);
+    event ValidatorRewardRatioUpdated(uint256 newRatio);
+    event ParticipantRewarded(address indexed participant, uint256 indexed epochNumber, uint256 reward, uint256 weight);
+    event EpochWeightCalculatorUpdated(address indexed newCalculator);
 }
