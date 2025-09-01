@@ -120,3 +120,68 @@ jspm_packages/
 .yarn/build-state.yml
 .yarn/install-state.gz
 .pnp.*
+
+# Benchmark model files and generated files
+benchmarks/**/*.onnx
+benchmarks/**/*.onnx_data
+benchmarks/**/*.weight
+benchmarks/**/*.pt
+benchmarks/**/*.pth
+benchmarks/**/*.safetensors
+benchmarks/**/*.bin
+benchmarks/**/*.model
+benchmarks/**/*.ckpt
+benchmarks/**/*.pkl
+benchmarks/**/*.pickle
+benchmarks/**/*.h5
+benchmarks/**/*.hdf5
+benchmarks/**/*.pb
+benchmarks/**/*.tflite
+benchmarks/**/*.mlmodel
+benchmarks/**/*.coreml
+
+# EZKL generated files
+benchmarks/**/*.ezkl
+benchmarks/**/*.key
+benchmarks/**/*.pk
+benchmarks/**/*.vk
+benchmarks/**/*.witness
+benchmarks/**/*.proof
+benchmarks/**/*.circuit
+benchmarks/**/*.srs
+benchmarks/**/*.kzg
+benchmarks/**/*.compiled
+benchmarks/**/*.sol
+
+# Benchmark results and temporary files
+benchmarks/**/*_results.json
+benchmarks/**/*_input.json
+benchmarks/**/*_settings.json
+benchmarks/**/*_output.json
+benchmarks/**/benchmark_report.json
+benchmarks/**/calldata.json
+benchmarks/**/verifier_abi.json
+benchmarks/**/witness.json
+benchmarks/**/proof.json
+benchmarks/**/settings.json
+benchmarks/**/simple_*.json
+
+# ONNX intermediate files
+benchmarks/**/onnx__*
+
+# Model directories
+benchmarks/**/hf_models/
+benchmarks/**/models/
+benchmarks/**/tmp/
+benchmarks/**/venv/
+
+# Virtual environments
+venv/
+env/
+.venv/
+.env/
+
+# Large model files (catch-all for any large binary files)
+benchmarks/**/*.bin
+benchmarks/**/*.dat
+benchmarks/**/*.data
