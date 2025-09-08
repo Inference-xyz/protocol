@@ -6,81 +6,110 @@ interface IComputeMarketplace {
     event JobPosted(
         uint256 indexed jobId,
         address indexed client,
-        bytes32 indexed modelHash,
-        bytes32 inputHash1,
-        bytes32 inputHash2,
-        bytes encryptedInputs,
-        uint256 bounty,
-        address bountyToken,
+        bytes32 indexed modelId,
+        bytes32 inputHash,
+        uint256 rngSeed,
+        uint256 maxTokens,
+        uint256 payment,
         uint256 timeout
     );
 
-    event JobClaimed(uint256 indexed jobId, address indexed provider);
+    event ClaimSubmitted(
+        uint256 indexed jobId,
+        address indexed provider,
+        bytes32 finalHash,
+        bytes32 outputCommit,
+        uint256 bond
+    );
 
-    event JobCompleted(uint256 indexed jobId, address indexed provider, bytes encryptedOutput, bytes zkProof);
+    event JobFinalized(uint256 indexed jobId, address indexed provider, uint256 payment);
 
-    event JobTimedOut(uint256 indexed jobId, address indexed client);
+    event JobDisputed(uint256 indexed jobId, address indexed challenger);
 
-    event ModelHashRegistered(bytes32 indexed modelHash, address indexed registrant);
+    event DisputeResolved(
+        uint256 indexed jobId,
+        bool providerWon,
+        address winner,
+        uint256 bondAmount
+    );
 
     // Structs
     struct Job {
         uint256 id;
         address client;
-        bytes32 modelHash;
-        bytes32 inputHash1;
-        bytes32 inputHash2;
-        bytes encryptedInputs;
-        uint256 bounty;
-        address bountyToken;
+        bytes32 modelId;
+        bytes32 inputHash;
+        uint256 rngSeed;
+        uint256 maxTokens;
+        uint256 payment;
         uint256 timeout;
         uint256 createdAt;
-        uint256 claimedAt;
         address provider;
-        bool completed;
-        bool timedOut;
+        bytes32 finalHash;
+        bytes32 outputCommit;
+        uint256 bond;
+        bool finalized;
+        bool disputed;
+        uint256 disputePeriod;
     }
 
-    struct ProviderStats {
-        uint256 totalJobs;
-        uint256 completedJobs;
-        uint256 totalEarnings;
-        uint256 averageResponseTime;
-        uint256 reputationScore;
+    struct Dispute {
+        uint256 jobId;
+        address challenger;
+        address provider;
+        uint256 leftBound;
+        uint256 rightBound;
+        uint256 currentMidpoint;
+        bool providerMoveSubmitted;
+        bool challengerMoveSubmitted;
+        bytes32 providerHash;
+        bytes32 challengerHash;
+        bool resolved;
     }
 
     // Core Functions
-    function postJob(bytes32 modelHash, bytes32 inputHash, uint256 bounty, uint256 timeout) external;
+    function openJob(
+        bytes32 modelId,
+        bytes32 inputHash,
+        uint256 rngSeed,
+        uint256 maxTokens,
+        uint256 payment,
+        address paymentToken,
+        uint256 timeout
+    ) external returns (uint256 jobId);
 
-    function claimJob(uint256 jobId) external;
+    function submitClaim(
+        uint256 jobId,
+        bytes32 finalHash,
+        bytes32 outputCommit,
+        uint256 bond
+    ) external;
 
-    function completeJob(uint256 jobId, bytes calldata encryptedOutput, bytes calldata zkProof) external;
+    function challenge(uint256 jobId) external;
 
-    function handleJobTimeout(uint256 jobId) external;
+    function submitMove(
+        uint256 disputeId,
+        uint256 midpoint,
+        bytes32 hash
+    ) external;
 
-    // Model Management
-    function registerModelHash(bytes32 modelHash) external;
-    function isModelHashRegistered(bytes32 modelHash) external view returns (bool);
-    function getModelHashRegistrant(bytes32 modelHash) external view returns (address);
+    function proveOneStep(
+        uint256 disputeId,
+        uint256 step,
+        bytes32 hashS,
+        bytes32 hashSPlus1,
+        bytes calldata proof
+    ) external;
 
     // View Functions
     function getJob(uint256 jobId) external view returns (Job memory);
-    function getJobsByClient(address client) external view returns (uint256[] memory);
-    function getJobsByProvider(address provider) external view returns (uint256[] memory);
-    function getProviderStats(address provider) external view returns (ProviderStats memory);
-    function getAllJobs() external view returns (Job[] memory);
-    function getAvailableJobs() external view returns (Job[] memory);
+    function getDispute(uint256 disputeId) external view returns (Dispute memory);
+    function isJobDisputable(uint256 jobId) external view returns (bool);
+    function getDisputePeriod() external view returns (uint256);
 
     // Admin Functions
-    function setSupportedTokens(address[] calldata tokens) external;
-    function isSupportedToken(address token) external view returns (bool);
-    function setMinBounty(uint256 newMinBounty) external;
-    function getMinBounty() external view returns (uint256);
-    function setJobTimeout(uint256 newTimeout) external;
-    function getJobTimeout() external view returns (uint256);
+    function setDisputePeriod(uint256 newPeriod) external;
+    function setMinBond(uint256 newMinBond) external;
     function pause() external;
     function unpause() external;
-
-    // Emergency Functions
-    function emergencyWithdraw(address token) external;
 }

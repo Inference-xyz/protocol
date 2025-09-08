@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Inference Protocol is a decentralized system for AI inference competitions with two distinct contest design variants.
+The Inference Protocol is a decentralized system for AI inference with an optimistic rollup design using EZKL ZK proofs for dispute resolution. The system enables trustless AI inference by allowing compute providers to optimistically execute jobs and only requiring ZK proofs when disputes arise.
 
 ## Core Components
 
@@ -15,7 +15,73 @@ The Inference Protocol is a decentralized system for AI inference competitions w
 - Tamper-proof reward distribution
 - Math-based emission calculations
 
-### 3. Contest System
+### 3. Optimistic Rollup Compute Marketplace
+
+The core innovation is an optimistic rollup design for AI inference that combines the efficiency of optimistic execution with the security of ZK proofs for disputes.
+
+#### Key Features:
+- **Optimistic Execution**: Compute providers run inference immediately and post claims
+- **Dispute Period**: Time window for challenges before finalization
+- **Two-Way Verification Game**: Binary search to find disputed step
+- **EZKL ZK Proofs**: Cryptographic proof of incorrect computation at specific step
+- **Bond Mechanism**: Economic incentives for honest behavior
+
+#### Workflow:
+```mermaid
+sequenceDiagram
+    participant User
+    participant Marketplace
+    participant Provider
+    participant Challenger
+    participant DisputeMechanism
+
+    User->>Marketplace: openJob(modelId, inputHash, rngSeed, maxTokens, payment)
+    Provider->>Marketplace: submitClaim(jobId, finalHash, outputCommit, bond)
+    
+    alt No Challenge
+        Marketplace->>Provider: finalizeJob() - release payment
+    else Challenge
+        Challenger->>Marketplace: challenge(jobId)
+        Marketplace->>DisputeMechanism: initiateDispute()
+        
+        loop Binary Search Game
+            Provider->>DisputeMechanism: submitMove(midpoint, hash)
+            Challenger->>DisputeMechanism: submitMove(midpoint, hash)
+        end
+        
+        Challenger->>DisputeMechanism: proveOneStep(step, hashS, hashS+1, ezklProof)
+        DisputeMechanism->>Marketplace: resolveDispute(winner, bond)
+    end
+```
+
+#### Interface Design:
+```mermaid
+classDiagram
+    class IComputeMarketplace {
+        +openJob(modelId, inputHash, rngSeed, maxTokens, payment)
+        +submitClaim(jobId, finalHash, outputCommit, bond)
+        +challenge(jobId)
+        +submitMove(disputeId, midpoint, hash)
+        +proveOneStep(disputeId, step, hashS, hashS+1, proof)
+    }
+    
+    class IDisputeMechanism {
+        +initiateDispute(jobId, challenger, provider, leftBound, rightBound)
+        +submitMove(disputeId, midpoint, hash)
+        +proveOneStep(disputeId, step, hashS, hashS+1, ezklProof)
+        +getCurrentBounds(disputeId)
+    }
+    
+    class IEZKLVerifier {
+        +verifyProof(proof, publicInputs)
+        +verifyOneStep(step, hashS, hashS+1, proof)
+    }
+    
+    IComputeMarketplace --> IDisputeMechanism : uses for disputes
+    IDisputeMechanism --> IEZKLVerifier : verifies ZK proofs
+```
+
+### 4. Contest System
 
 #### Variant 1: Validator Set Only
 ```mermaid
@@ -95,15 +161,44 @@ classDiagram
 
 ## Design Comparison
 
-| Aspect | Validator Set | ZK Proof Only |
-|--------|---------------|---------------|
-| **Decentralization** | High (multiple validators) | Medium (single verifier) |
-| **Gas Costs** | Low (no ZK verification) | High (ZK proof verification) |
-| **Trust Model** | Trust in validator consensus | Trust in ZK proof system |
-| **Scalability** | Limited by validator count | Limited by ZK proof costs |
-| **Complexity** | Simple consensus mechanism | Complex ZK proof integration |
+| Aspect | Optimistic Rollup | Validator Set | ZK Proof Only |
+|--------|------------------|---------------|---------------|
+| **Decentralization** | High (anyone can challenge) | High (multiple validators) | Medium (single verifier) |
+| **Gas Costs** | Low (only on disputes) | Low (no ZK verification) | High (ZK proof verification) |
+| **Trust Model** | Trust in economic incentives | Trust in validator consensus | Trust in ZK proof system |
+| **Scalability** | High (optimistic execution) | Limited by validator count | Limited by ZK proof costs |
+| **Complexity** | Medium (dispute mechanism) | Simple consensus mechanism | Complex ZK proof integration |
+| **Latency** | Fast (immediate results) | Medium (consensus time) | Slow (proof generation) |
 
 ## Implementation Flow
+
+### Optimistic Rollup Variant
+1. User posts inference job with model_id, input_hash, rng_seed, max_tokens, payment, timeout
+2. Compute provider runs inference immediately and returns result
+3. Provider submits claim with final_hash, output_commit, and bond
+4. Dispute period begins - anyone can challenge the claim
+5. If no challenge: funds released to provider after dispute period
+6. If challenged: two-way verification game begins
+
+#### Detailed Optimistic Rollup Flow:
+```mermaid
+flowchart TD
+    A[User: openJob] --> B[Provider: Run Inference]
+    B --> C[Provider: submitClaim with bond]
+    C --> D{Dispute Period}
+    D -->|No Challenge| E[Finalize: Release Payment]
+    D -->|Challenge| F[Initiate Dispute Game]
+    F --> G[Binary Search: [L,R] = [0,N]]
+    G --> H[Provider: submitMove]
+    H --> I[Challenger: submitMove]
+    I --> J{R-L = 1?}
+    J -->|No| K[Update Bounds]
+    K --> H
+    J -->|Yes| L[Challenger: proveOneStep with EZKL]
+    L --> M{Proof Valid?}
+    M -->|Yes| N[Challenger Wins Bond]
+    M -->|No| O[Provider Wins Bond]
+```
 
 ### Validator Set Variant
 1. Contest owner creates contest with validator parameters
