@@ -74,7 +74,6 @@ interface IComputeMarketplace {
         uint256 rngSeed,
         uint256 maxTokens,
         uint256 payment,
-        address paymentToken,
         uint256 timeout
     ) external returns (uint256 jobId);
 

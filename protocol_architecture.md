@@ -35,7 +35,7 @@ sequenceDiagram
     participant Challenger
     participant DisputeMechanism
 
-    User->>Marketplace: openJob(modelId, inputHash, rngSeed, maxTokens, payment)
+    User->>Marketplace: openJob(modelId, inputHash, rngSeed, maxTokens, payment, timeout)
     Provider->>Marketplace: submitClaim(jobId, finalHash, outputCommit, bond)
     
     alt No Challenge
@@ -58,7 +58,7 @@ sequenceDiagram
 ```mermaid
 classDiagram
     class IComputeMarketplace {
-        +openJob(modelId, inputHash, rngSeed, maxTokens, payment)
+        +openJob(modelId, inputHash, rngSeed, maxTokens, payment, timeout)
         +submitClaim(jobId, finalHash, outputCommit, bond)
         +challenge(jobId)
         +submitMove(disputeId, midpoint, hash)
@@ -188,14 +188,14 @@ flowchart TD
     C --> D{Dispute Period}
     D -->|No Challenge| E[Finalize: Release Payment]
     D -->|Challenge| F[Initiate Dispute Game]
-    F --> G[Binary Search: [L,R] = [0,N]]
+    F --> G["Binary Search: L,R = 0,N"]
     G --> H[Provider: submitMove]
     H --> I[Challenger: submitMove]
-    I --> J{R-L = 1?}
+    I --> J{"R-L = 1?"}
     J -->|No| K[Update Bounds]
     K --> H
     J -->|Yes| L[Challenger: proveOneStep with EZKL]
-    L --> M{Proof Valid?}
+    L --> M{"Proof Valid?"}
     M -->|Yes| N[Challenger Wins Bond]
     M -->|No| O[Provider Wins Bond]
 ```
