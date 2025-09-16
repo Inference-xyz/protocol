@@ -21,7 +21,7 @@ interface IContestFactory {
     function createContest(ContestConfig calldata config) external returns (address contestAddress);
     function createContestWithInitialWeight(ContestConfig calldata config, uint256 initialWeight)
         external
-        returns (address contestAddress); // Create contest with initial emission weight
+        returns (address contestAddress);
     function createContestWithValidatorSet(ContestConfig calldata config, address validatorSet)
         external
         returns (address contestAddress);
@@ -30,8 +30,6 @@ interface IContestFactory {
         returns (address contestAddress);
 
     // Management Functions
-    function pauseContest(address contest) external;
-    function unpauseContest(address contest) external;
     function setContestTemplate(address template) external;
     function setRewardDistributor(address distributor) external;
     function setContestRegistry(address registry) external;
@@ -53,11 +51,6 @@ interface IContestFactory {
     event ContestCreated(
         address indexed contestAddress, address indexed creator, string metadataURI, uint256 creatorFeePct
     );
-    event ContestPaused(address indexed contest);
-    event ContestUnpaused(address indexed contest);
-    event ContestTemplateUpdated(address indexed newTemplate);
+    event ContestTemplateUpdated(address indexed oldTemplate, address indexed newTemplate);
     event RewardDistributorUpdated(address indexed newDistributor);
-    event ValidatorSetTemplateUpdated(address indexed newTemplate);
-    event ScoringVerifierTemplateUpdated(address indexed newTemplate);
-    event EZKLFactoryUpdated(address indexed newFactory);
 }
