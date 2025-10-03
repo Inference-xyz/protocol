@@ -32,24 +32,7 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
     address[] public participantList;
     uint256[] public submissionIds;
     
-    // Events
-    event SubmissionSubmitted(
-        address indexed participant,
-        uint256 indexed submissionId,
-        string ipfsURI,
-        bytes32 outputHash
-    );
-    
-    event ReviewSubmitted(
-        address indexed reviewer,
-        uint256 indexed submissionId,
-        uint256 score
-    );
-    
-    event ContestFinalized(
-        address indexed winner,
-        uint256 rewardAmount
-    );
+    // Events are defined in IContest interface
 
     modifier onlyParticipant() {
         require(participants[msg.sender].isActive, "Not an active participant");
@@ -116,7 +99,86 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
     }
 
     /**
-     * @dev Submit entry directly (simplified from commit-reveal)
+     * @dev Leave the contest and reclaim stake
+     */
+    function leaveContest() external {
+        require(participants[msg.sender].isActive, "Not a participant");
+        require(!isFinalized, "Contest already finalized");
+        
+        uint256 stakedAmount = participants[msg.sender].stakedAmount;
+        
+        // Remove from active participants
+        participants[msg.sender].isActive = false;
+        
+        // Remove from participant list
+        for (uint256 i = 0; i < participantList.length; i++) {
+            if (participantList[i] == msg.sender) {
+                participantList[i] = participantList[participantList.length - 1];
+                participantList.pop();
+                break;
+            }
+        }
+        
+        // Refund stake
+        if (stakedAmount > 0) {
+            (bool success, ) = msg.sender.call{value: stakedAmount}("");
+            require(success, "Refund failed");
+        }
+    }
+
+    /**
+     * @dev Commit a submission (commit phase)
+     */
+    function commitSubmission(bytes32 commitHash) external onlyParticipant {
+        uint256 submissionId = nextSubmissionId++;
+        
+        submissions[submissionId] = ReviewStructs.Submission({
+            participant: msg.sender,
+            commitHash: commitHash,
+            ipfsURI: "",
+            outputHash: bytes32(0),
+            commitTime: block.timestamp,
+            revealTime: 0,
+            isRevealed: false,
+            aggregatedScore: 0,
+            reviewCount: 0
+        });
+        
+        participantSubmissions[msg.sender].push(submissionId);
+        submissionIds.push(submissionId);
+        participants[msg.sender].lastSubmissionTime = block.timestamp;
+        
+        emit SubmissionSubmitted(msg.sender, submissionId, "", commitHash);
+    }
+
+    /**
+     * @dev Reveal a submission (reveal phase)
+     */
+    function revealSubmission(
+        uint256 submissionId,
+        string calldata ipfsURI,
+        bytes32 outputHash,
+        uint256 nonce
+    ) external onlyParticipant {
+        require(submissionId < nextSubmissionId, "Invalid submission ID");
+        ReviewStructs.Submission storage submission = submissions[submissionId];
+        require(submission.participant == msg.sender, "Not your submission");
+        require(!submission.isRevealed, "Already revealed");
+        
+        // Verify the reveal matches the commit
+        bytes32 expectedCommit = keccak256(abi.encodePacked(outputHash, nonce));
+        require(submission.commitHash == expectedCommit, "Invalid reveal");
+        
+        submission.ipfsURI = ipfsURI;
+        submission.outputHash = outputHash;
+        submission.revealTime = block.timestamp;
+        submission.isRevealed = true;
+        
+        emit SubmissionSubmitted(msg.sender, submissionId, ipfsURI, outputHash);
+    }
+
+    /**
+     * @dev Submit entry directly (simplified from commit-reveal) - for backward compatibility
      */
     function submitEntry(bytes32 outputHash, string calldata ipfsURI) external onlyParticipant {
         uint256 submissionId = nextSubmissionId++;
@@ -192,6 +254,42 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
     }
 
     /**
+     * @dev Generate review assignments for all submissions
+     */
+    function generateReviewAssignments() external onlyOwner {
+        require(!isFinalized, "Contest already finalized");
+        
+        // Simple assignment: each participant reviews submissions from others
+        for (uint256 i = 0; i < participantList.length; i++) {
+            address reviewer = participantList[i];
+            
+            for (uint256 j = 0; j < submissionIds.length; j++) {
+                uint256 submissionId = submissionIds[j];
+                ReviewStructs.Submission storage submission = submissions[submissionId];
+                
+                // Don't assign participants to review their own submissions
+                if (submission.participant != reviewer && submission.isRevealed) {
+                    // In a real implementation, you'd store these assignments
+                    // For now, we'll just emit an event or store in a mapping
+                    // This is a simplified version
+                }
+            }
+        }
+    }
+
+    /**
+     * @dev Get review assignments for a submission
+     */
+    function getReviewAssignments(uint256 submissionId) external view returns (ReviewStructs.ReviewAssignment[] memory) {
+        require(submissionId < nextSubmissionId, "Invalid submission ID");
+        
+        // For simplicity, return empty array for now
+        // In a real implementation, you'd return actual assignments
+        ReviewStructs.ReviewAssignment[] memory assignments = new ReviewStructs.ReviewAssignment[](0);
+        return assignments;
+    }
+
+    /**
      * @dev Claim rewards for participant
      */
     function claimReward() external override nonReentrant {
@@ -258,6 +356,26 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
 
     function getRewardSplit() external view override returns (RewardSplit memory) {
         return contestInfo.rewardSplit;
+    }
+
+    function getScoringVerifier() external view returns (address) {
+        return contestInfo.scoringVerifier;
+    }
+
+    function getCurrentPhase() external view returns (ReviewStructs.Phase) {
+        // Simplified phase logic - in practice this would be more sophisticated
+        uint256 elapsed = block.timestamp - contestInfo.startTime;
+        uint256 quarter = contestInfo.duration / 4;
+        
+        if (elapsed < quarter) {
+            return ReviewStructs.Phase.Commit;
+        } else if (elapsed < quarter * 2) {
+            return ReviewStructs.Phase.Reveal;
+        } else if (elapsed < quarter * 3) {
+            return ReviewStructs.Phase.Review;
+        } else {
+            return ReviewStructs.Phase.Finalized;
+        }
     }
 
     // Receive function to accept ETH for rewards

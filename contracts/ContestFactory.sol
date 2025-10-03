@@ -21,7 +21,7 @@ contract ContestFactory is IContestFactory, Ownable {
     mapping(address => address[]) public contestsByCreator;
     mapping(address => bool) public validContests;
 
-    event ContestTemplateUpdated(address indexed oldTemplate, address indexed newTemplate);
+    // Events are defined in IContestFactory interface
 
     constructor() Ownable(msg.sender) {
         // Deploy template contract

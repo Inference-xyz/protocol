@@ -55,7 +55,7 @@ contract ContestTest is Test {
         address contestAddress = factory.createContest(testConfig);
         contest = Contest(payable(contestAddress));
         
-        reviewVerifier = contest.reviewVerifier();
+        reviewVerifier = ReviewVerifier(contest.getScoringVerifier());
         
         // Fund test accounts
         vm.deal(creator, 10 ether);
