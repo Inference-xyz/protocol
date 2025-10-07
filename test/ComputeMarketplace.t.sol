@@ -4,13 +4,10 @@ pragma solidity ^0.8.19;
 import "forge-std/Test.sol";
 import "../contracts/ComputeMarketplace.sol";
 import "../contracts/InfToken.sol";
-import "../contracts/MockVerifier.sol";
 
 contract ComputeMarketplaceTest is Test {
     ComputeMarketplace public marketplace;
     InfToken public token;
-    MockVerifier public verifier;
-
     address public client = address(0x101);
     address public provider = address(0x102);
 
@@ -19,9 +16,8 @@ contract ComputeMarketplaceTest is Test {
     uint256 public constant PAYMENT_AMOUNT = 100 ether;
 
     function setUp() public {
-        verifier = new MockVerifier();
         token = new InfToken();
-        marketplace = new ComputeMarketplace(address(verifier));
+        marketplace = new ComputeMarketplace();
 
         inputHashes.push(keccak256("input1"));
 
@@ -56,14 +52,11 @@ contract ComputeMarketplaceTest is Test {
         marketplace.claimJob(jobId);
 
         bytes memory encryptedOutput = "encrypted_output";
-        bytes memory zkProof = "zk_proof";
-        uint256[] memory publicInputs = new uint256[](1);
-        publicInputs[0] = uint256(keccak256("public_input"));
 
         uint256 providerBalanceBefore = token.balanceOf(provider);
 
         vm.prank(provider);
-        marketplace.completeJob(jobId, encryptedOutput, zkProof, publicInputs);
+        marketplace.completeJob(jobId, encryptedOutput);
 
         uint256 providerBalanceAfter = token.balanceOf(provider);
         assertEq(providerBalanceAfter, providerBalanceBefore + PAYMENT_AMOUNT);

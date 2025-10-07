@@ -1,8 +1,8 @@
 {
   "compilerOptions": {
-    "target": "ES2022",
+    "target": "ES2020",
     "module": "commonjs",
-    "lib": ["ES2022", "DOM"],
+    "lib": ["ES2020"],
     "outDir": "./dist",
     "rootDir": "./",
     "strict": true,
@@ -10,24 +10,16 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
-    "types": ["node", "mocha", "chai"],
-    "typeRoots": ["./node_modules/@types", "./typechain"],
     "moduleResolution": "node",
-    "allowSyntheticDefaultImports": true,
-    "noImplicitAny": false
+    "allowSyntheticDefaultImports": true
   },
   "include": [
-    "scripts/**/*",
-    "test/**/*",
-    "typechain/**/*"
+    "demo/**/*",
+    "scripts/**/*"
   ],
   "exclude": [
     "node_modules",
     "dist",
-    "out",
-    "cache"
+    "out"
   ]
-} 
+}

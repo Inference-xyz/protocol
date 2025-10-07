@@ -18,7 +18,7 @@ interface IContestFactory {
     }
 
     // Core Functions
-    function createContest(ContestConfig calldata config) external returns (address contestAddress);
+    function createContest(ContestConfig calldata config) external payable returns (address contestAddress);
     function createContestWithInitialWeight(ContestConfig calldata config, uint256 initialWeight)
         external
         returns (address contestAddress);
@@ -35,7 +35,6 @@ interface IContestFactory {
     function setContestRegistry(address registry) external;
     function setValidatorSetTemplate(address template) external;
     function setScoringVerifierTemplate(address template) external;
-    function setEZKLFactory(address factory) external;
 
     // View Functions
     function getCreatedContests() external view returns (address[] memory);
@@ -45,7 +44,6 @@ interface IContestFactory {
     function getTotalContestsCreated() external view returns (uint256);
     function getValidatorSetTemplate() external view returns (address);
     function getScoringVerifierTemplate() external view returns (address);
-    function getEZKLFactory() external view returns (address);
 
     // Events
     event ContestCreated(

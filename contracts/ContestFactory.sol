@@ -6,17 +6,11 @@ import "@openzeppelin/contracts/proxy/Clones.sol";
 import "./interfaces/IContestFactory.sol";
 import "./Contest.sol";
 
-/**
- * @title ContestFactory
- * @dev Simplified factory contract for creating peer-reviewed inference contests
- */
 contract ContestFactory is IContestFactory, Ownable {
     using Clones for address;
 
-    // Template contract
     address public contestTemplate;
     
-    // Contest tracking
     address[] public allContests;
     mapping(address => address[]) public contestsByCreator;
     mapping(address => bool) public validContests;
@@ -24,31 +18,30 @@ contract ContestFactory is IContestFactory, Ownable {
     // Events are defined in IContestFactory interface
 
     constructor() Ownable(msg.sender) {
-        // Deploy template contract
         Contest contest = new Contest();
         contestTemplate = address(contest);
     }
 
-    /**
-     * @dev Create a new peer-reviewed contest
-     */
-    function createContest(ContestConfig calldata config) public override returns (address contestAddress) {
+    function createContest(ContestConfig calldata config) public payable override returns (address contestAddress) {
         require(contestTemplate != address(0), "Contest template not set");
         require(config.creatorFeePct <= 5000, "Creator fee too high"); // Max 50%
         
-        // Clone the contest template
         contestAddress = contestTemplate.clone();
         
-        // Initialize the contest with 14 day duration
         Contest(payable(contestAddress)).initialize(
             msg.sender,
             config.metadataURI,
             config.creatorFeePct,
-            14 days,
-            false // Not everlasting for peer review contests
+            config.duration,
+            false
         );
         
-        // Track the contest
+        // Transfer any ETH sent to the contest as initial reward pool
+        if (msg.value > 0) {
+            (bool success, ) = contestAddress.call{value: msg.value}("");
+            require(success, "Failed to transfer reward pool");
+        }
+        
         allContests.push(contestAddress);
         contestsByCreator[msg.sender].push(contestAddress);
         validContests[contestAddress] = true;
@@ -142,10 +135,6 @@ contract ContestFactory is IContestFactory, Ownable {
         revert("Not applicable for peer review contests");
     }
 
-    function setEZKLFactory(address) external pure override {
-        revert("Not applicable for peer review contests");
-    }
-
     function getValidatorSetTemplate() external pure override returns (address) {
         return address(0);
     }
@@ -154,7 +143,4 @@ contract ContestFactory is IContestFactory, Ownable {
         return address(0);
     }
 
-    function getEZKLFactory() external pure override returns (address) {
-        return address(0);
-    }
 }

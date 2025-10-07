@@ -6,34 +6,23 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "./interfaces/IContest.sol";
 import "./types/ReviewStructs.sol";
 
-/**
- * @title Contest
- * @dev Simplified peer-reviewed AI inference contest
- */
 contract Contest is IContest, Ownable, ReentrancyGuard {
-    // Contest configuration
     ContestInfo public contestInfo;
     
-    // Contest state
     uint256 public nextSubmissionId = 1;
     bool public isFinalized;
     
-    // Simple configuration
     uint256 public constant MIN_SCORE = 0;
     uint256 public constant MAX_SCORE = 100;
     
-    // Storage mappings
     mapping(address => Participant) public participants;
     mapping(uint256 => ReviewStructs.Submission) public submissions;
     mapping(address => uint256[]) public participantSubmissions;
     mapping(address => mapping(uint256 => uint256)) public reviews; // reviewer => submissionId => score
     
-    // Arrays for iteration
     address[] public participantList;
     uint256[] public submissionIds;
     
-    // Events are defined in IContest interface
-
     modifier onlyParticipant() {
         require(participants[msg.sender].isActive, "Not an active participant");
         _;
@@ -41,9 +30,6 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
 
     constructor() Ownable(msg.sender) {}
 
-    /**
-     * @dev Initialize the contest
-     */
     function initialize(
         address creator,
         string calldata metadataURI,
@@ -77,9 +63,6 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
         emit ContestInitialized(creator, metadataURI, isEverlasting);
     }
 
-    /**
-     * @dev Join contest
-     */
     function joinContest() external payable override {
         require(!participants[msg.sender].isActive, "Already joined");
         
@@ -98,9 +81,6 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
         emit ParticipantJoined(msg.sender, block.timestamp);
     }
 
-    /**
-     * @dev Leave the contest and reclaim stake
-     */
     function leaveContest() external {
         require(participants[msg.sender].isActive, "Not a participant");
         require(!isFinalized, "Contest already finalized");
