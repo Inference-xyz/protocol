@@ -55,6 +55,18 @@ library ReviewStructs {
     }
 
     /**
+     * @dev Structure for a review with commit-reveal
+     */
+    struct Review {
+        address reviewer;        // Who submitted the review
+        bytes32 commitHash;      // Hash of (submissionId, score, nonce)
+        uint256 score;           // Actual score (0 until revealed)
+        uint256 commitTime;      // When the review was committed
+        uint256 revealTime;      // When the review was revealed
+        bool isRevealed;         // Whether the review has been revealed
+    }
+
+    /**
      * @dev Structure for contest phases and deadlines
      */
     struct ContestPhases {
@@ -68,10 +80,11 @@ library ReviewStructs {
      * @dev Enum for contest phases
      */
     enum Phase {
-        Commit,      // Participants can commit their outputs
-        Reveal,      // Participants can reveal their outputs
-        Review,      // Peer review phase
-        Finalized    // Contest is finalized, rewards distributed
+        Commit,         // Participants can commit their outputs
+        Reveal,         // Participants can reveal their outputs
+        ReviewCommit,   // Reviewers can commit their reviews
+        ReviewReveal,   // Reviewers can reveal their reviews
+        Finalized       // Contest is finalized, rewards distributed
     }
 
     /**

@@ -50,10 +50,15 @@ interface IContest {
 
     // Participation Functions
     function joinContest() external payable;
-    function submitEntry(bytes32 outputHash, string calldata ipfsURI) external;
 
     // Review Functions
-    function submitReview(uint256 submissionId, uint256 score) external;
+    function commitReview(uint256 submissionId, bytes32 commitHash) external;
+    function revealReview(uint256 submissionId, uint256 score, uint256 nonce) external;
+
+    // Review Assignment Functions
+    function generateReviewAssignments() external;
+    function getReviewAssignmentsForReviewer(address reviewer) external view returns (uint256[] memory);
+    function isReviewerAssigned(address reviewer, uint256 submissionId) external view returns (bool);
 
     // Contest Finalization
     function finalizeContest() external;
@@ -79,6 +84,9 @@ interface IContest {
     event ParticipantJoined(address indexed participant, uint256 timestamp);
     event SubmissionSubmitted(address indexed participant, uint256 indexed submissionId, string ipfsURI, bytes32 outputHash);
     event ReviewSubmitted(address indexed reviewer, uint256 indexed submissionId, uint256 score);
+    event ReviewCommitted(address indexed reviewer, uint256 indexed submissionId, bytes32 commitHash);
+    event ReviewRevealed(address indexed reviewer, uint256 indexed submissionId, uint256 score);
+    event ReviewAssignmentsGenerated(uint256 totalAssignments);
     event ContestFinalized(address indexed winner, uint256 rewardAmount);
     event RewardClaimed(address indexed participant, uint256 amount);
 }
