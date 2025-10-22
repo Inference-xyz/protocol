@@ -8,11 +8,17 @@ import {ERC20Burnable} from "@openzeppelin/contracts/token/ERC20/extensions/ERC2
 import {ERC20Pausable} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Pausable.sol";
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
-import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Permit.sol";
-import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
-import {IInferenceERC20} from "./interfaces/IInferenceERC20.sol";
 
+/**
+ * @title InfToken
+ * @notice INF utility token for Inference protocol - used for staking, rewards, and governance
+ * @dev Combines multiple OpenZeppelin extensions:
+ * - ERC20Permit: Gasless approvals via signatures (EIP-2612)
+ * - ERC20Capped: Hard supply cap at 1B tokens
+ * - ERC20Burnable: Token holders can burn their tokens
+ * - ERC20Pausable: Emergency pause transfers
+ * - AccessControl: Role-based minting and pausing
+ */
 contract InfToken is 
     ERC20,
     ERC20Permit,
@@ -20,24 +26,17 @@ contract InfToken is
     ERC20Burnable,
     ERC20Pausable,
     AccessControl,
-    ReentrancyGuard,
-    IInferenceERC20
+    ReentrancyGuard
 {
-    uint256 public constant MAX_SUPPLY = 1_000_000_000 * 10**18; // 1B tokens
-    uint256 public constant INITIAL_SUPPLY = 100_000_000 * 10**18; // 100M tokens
+    uint256 public constant MAX_SUPPLY = 1_000_000_000 * 10**18; // 1B hard cap
+    uint256 public constant INITIAL_SUPPLY = 100_000_000 * 10**18; // 100M minted to deployer
     
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
     
-    mapping(address => bool) private _minters;
-    
-    error OnlyMinter();
-    error MinterAlreadySet();
     error InvalidMinterAddress();
     
     event MinterUpdated(address indexed minter, bool enabled);
-    event TokensMinted(address indexed to, uint256 amount);
-    event TokensBurned(address indexed from, uint256 amount);
     
     constructor() 
         ERC20("Inference Token", "INF")
@@ -51,6 +50,10 @@ contract InfToken is
         _mint(msg.sender, INITIAL_SUPPLY);
     }
     
+    /**
+     * @dev Override required by Solidity when inheriting multiple base contracts
+     * Enforces cap limit and pause state on all transfers
+     */
     function _update(address from, address to, uint256 value)
         internal
         override(ERC20, ERC20Capped, ERC20Pausable)
@@ -60,33 +63,26 @@ contract InfToken is
     
     function mint(address to, uint256 amount) 
         external 
-        override
         onlyRole(MINTER_ROLE)
-        nonReentrant
     {
         _mint(to, amount);
-        emit TokensMinted(to, amount);
     }
     
-    function burn(uint256 amount) public override(ERC20Burnable, IInferenceERC20) {
-        super.burn(amount);
-        emit TokensBurned(msg.sender, amount);
-    }
+    // burn() and burnFrom() are inherited from ERC20Burnable - no need to override
     
-    function burnFrom(address account, uint256 amount) public override(ERC20Burnable, IInferenceERC20) {
-        super.burnFrom(account, amount);
-        emit TokensBurned(account, amount);
-    }
-    
+    /**
+     * @notice Grant or revoke MINTER_ROLE to an address
+     * @param minter Address to update
+     * @param enabled True to grant role, false to revoke
+     */
     function setMinter(address minter, bool enabled) 
         external 
-        override
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
         if (minter == address(0)) revert InvalidMinterAddress();
-        if (_minters[minter] == enabled) revert MinterAlreadySet();
         
-        _minters[minter] = enabled;
+        bool currentlyMinter = hasRole(MINTER_ROLE, minter);
+        require(currentlyMinter != enabled, "Minter status already set");
         
         if (enabled) {
             _grantRole(MINTER_ROLE, minter);
@@ -97,31 +93,22 @@ contract InfToken is
         emit MinterUpdated(minter, enabled);
     }
     
-    function isMinter(address account) external view override returns (bool) {
-        return _minters[account];
+    function isMinter(address account) external view returns (bool) {
+        return hasRole(MINTER_ROLE, account);
     }
     
-    function pause() external override onlyRole(PAUSER_ROLE) {
+    function pause() external onlyRole(PAUSER_ROLE) {
         _pause();
     }
     
-    function unpause() external override onlyRole(PAUSER_ROLE) {
+    function unpause() external onlyRole(PAUSER_ROLE) {
         _unpause();
     }
     
-    function cap() public view override(ERC20Capped, IInferenceERC20) returns (uint256) {
-        return super.cap();
-    }
-    
-    function paused() public view override(Pausable, IInferenceERC20) returns (bool) {
-        return super.paused();
-    }
-    
-    function decimals() public pure override(ERC20, IERC20Metadata) returns (uint8) {
-        return 18;
-    }
-    
-    function nonces(address owner) public view override(ERC20Permit, IERC20Permit) returns (uint256) {
-        return super.nonces(owner);
-    }
+    // Inherited view functions (no need to override):
+    // - cap() from ERC20Capped
+    // - paused() from ERC20Pausable  
+    // - decimals() from ERC20 (returns 18)
+    // - nonces() from ERC20Permit
 }
+

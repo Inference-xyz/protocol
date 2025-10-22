@@ -3,118 +3,163 @@ pragma solidity ^0.8.19;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "./interfaces/IContest.sol";
+import "./interfaces/IContestManager.sol";
 import "./types/ReviewStructs.sol";
 
+/**
+ * @title Contest
+ * @notice Manages decentralized ML model competitions with commit-reveal submission and peer review
+ * @dev Implements a 4-phase lifecycle: Commit → Reveal → ReviewCommit → ReviewReveal → Finalized
+ * Uses minimal proxy pattern via clone() - state is set through initialize()
+ */
 contract Contest is IContest, Ownable, ReentrancyGuard {
     ContestInfo public contestInfo;
+    
+    address public contestManager;
+    address public infToken;
     
     uint256 public nextSubmissionId = 1;
     bool public isFinalized;
     
     uint256 public constant MIN_SCORE = 0;
     uint256 public constant MAX_SCORE = 100;
+    uint256 public constant REVIEWS_PER_PARTICIPANT = 5; // Max reviews assigned per participant
     
     mapping(address => Participant) public participants;
     mapping(uint256 => ReviewStructs.Submission) public submissions;
     mapping(address => uint256[]) public participantSubmissions;
-    mapping(address => mapping(uint256 => uint256)) public reviews; // reviewer => submissionId => score (deprecated, kept for compatibility)
-    mapping(address => mapping(uint256 => ReviewStructs.Review)) public reviewCommits; // reviewer => submissionId => Review
-    mapping(address => uint256[]) public reviewAssignments; // reviewer => list of submissionIds to review
-    mapping(address => mapping(uint256 => bool)) public isAssignedReviewer; // reviewer => submissionId => isAssigned
+    mapping(address => mapping(uint256 => ReviewStructs.Review)) public reviewCommits;
+    mapping(address => uint256[]) public reviewAssignments;
+    mapping(address => mapping(uint256 => bool)) public isAssignedReviewer;
     
     address[] public participantList;
     uint256[] public submissionIds;
-    uint256 public constant REVIEWS_PER_PARTICIPANT = 5;
     bool public assignmentsGenerated;
+    bool public paused;
     
     modifier onlyParticipant() {
-        require(participants[msg.sender].isActive, "Not an active participant");
+        require(participants[msg.sender].isActive || msg.sender == contestInfo.qcAddress, "Not an active participant or QC");
+        _;
+    }
+    
+    modifier whenNotPaused() {
+        require(!paused, "Contest is paused");
+        _;
+    }
+
+    modifier onlyContestManager() {
+        require(msg.sender == contestManager, "Only contest manager");
+        _;
+    }
+
+    modifier onlyQC() {
+        require(msg.sender == contestInfo.qcAddress, "Only QC");
         _;
     }
 
     constructor() Ownable(msg.sender) {}
 
+    /**
+     * @notice Initialize contest (called once by factory after clone)
+     * @dev Replaces constructor for minimal proxy pattern
+     * @param creator Contest owner who can finalize and manage
+     * @param metadataURI IPFS URI with contest rules and dataset info
+     * @param duration Total contest duration in seconds (divided into 4 equal phases)
+     * @param _contestManager Address of ContestManager for stake/reward handling
+     * @param _infToken INF token address for staking and rewards
+     * @param _qcAddress Optional quality control address with special privileges
+     */
     function initialize(
         address creator,
         string calldata metadataURI,
-        uint256 creatorFeePct,
         uint256 duration,
-        bool isEverlasting
+        address _contestManager,
+        address _infToken,
+        address _qcAddress
     ) external override {
         require(contestInfo.creator == address(0), "Already initialized");
+        require(_contestManager != address(0), "Invalid contest manager");
+        require(_infToken != address(0), "Invalid INF token");
+        require(duration > 0, "Invalid duration");
+        
+        contestManager = _contestManager;
+        infToken = _infToken;
         
         contestInfo = ContestInfo({
             creator: creator,
             metadataURI: metadataURI,
-            rewardSplit: RewardSplit({
-                ownerPct: creatorFeePct,
-                participantPct: 10000 - creatorFeePct,
-                validatorPct: 0,
-                totalPct: 10000
-            }),
             startTime: block.timestamp,
             duration: duration,
-            currentEpoch: 1,
             status: ContestStatus.Active,
-            isEverlasting: isEverlasting,
-            validatorSet: address(0),
-            scoringVerifier: address(0)
+            qcAddress: _qcAddress
         });
         
         nextSubmissionId = 1;
         _transferOwnership(creator);
         
-        emit ContestInitialized(creator, metadataURI, isEverlasting);
+        emit ContestInitialized(creator, metadataURI);
     }
 
-    function joinContest() external payable override {
+    /**
+     * @notice Join contest by staking INF tokens
+     * @dev Transfers stake to ContestManager, not this contract. Uses CEI pattern for reentrancy safety
+     * @param stakeAmount Amount of INF tokens to stake
+     */
+    function joinContest(uint256 stakeAmount) external override whenNotPaused {
         require(!participants[msg.sender].isActive, "Already joined");
+        require(stakeAmount > 0, "Stake amount must be greater than 0");
+        require(contestInfo.status == ContestStatus.Active, "Contest not active");
         
+        // Check-Effects-Interactions pattern for reentrancy protection
         participants[msg.sender] = Participant({
             account: msg.sender,
             joinedAt: block.timestamp,
-            currentScore: 0,
             totalRewards: 0,
             lastSubmissionTime: 0,
             isActive: true,
-            stakedAmount: msg.value
+            stakedAmount: stakeAmount
         });
         
         participantList.push(msg.sender);
         
+        // External interactions last
+        IERC20(infToken).transferFrom(msg.sender, contestManager, stakeAmount);
+        IContestManager(contestManager).recordStake(msg.sender, stakeAmount);
+        
         emit ParticipantJoined(msg.sender, block.timestamp);
     }
 
-    function leaveContest() external {
+    function leaveContest() external whenNotPaused {
         require(participants[msg.sender].isActive, "Not a participant");
         require(!isFinalized, "Contest already finalized");
+        require(getCurrentPhase() == ReviewStructs.Phase.Commit, "Cannot leave after commit phase");
+        require(participantSubmissions[msg.sender].length == 0, "Cannot leave after submitting");
         
-        uint256 stakedAmount = participants[msg.sender].stakedAmount;
-        
-        // Remove from active participants
         participants[msg.sender].isActive = false;
         
-        // Remove from participant list
-        for (uint256 i = 0; i < participantList.length; i++) {
+        // Remove from participant list - optimized
+        uint256 length = participantList.length;
+        for (uint256 i = 0; i < length; i++) {
             if (participantList[i] == msg.sender) {
-                participantList[i] = participantList[participantList.length - 1];
+                participantList[i] = participantList[length - 1];
                 participantList.pop();
                 break;
             }
         }
         
-        // Refund stake
-        if (stakedAmount > 0) {
-            (bool success, ) = msg.sender.call{value: stakedAmount}("");
-            require(success, "Refund failed");
-        }
+        emit ParticipantLeft(msg.sender);
     }
 
     /**
-     * @dev Commit a submission (commit phase)
+     * @notice Submit model prediction commitment during Commit phase
+     * @dev Hash should be keccak256(ipfsURI, outputHash, nonce) to prevent front-running
+     * @param commitHash Commitment hash to be revealed in next phase
      */
-    function commitSubmission(bytes32 commitHash) external onlyParticipant {
+    function commitSubmission(bytes32 commitHash) external onlyParticipant whenNotPaused {
+        require(getCurrentPhase() == ReviewStructs.Phase.Commit, "Invalid phase");
+        
         uint256 submissionId = nextSubmissionId++;
         
         submissions[submissionId] = ReviewStructs.Submission({
@@ -137,20 +182,26 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
     }
 
     /**
-     * @dev Reveal a submission (reveal phase)
+     * @notice Reveal previously committed submission during Reveal phase
+     * @dev Validates commitment matches keccak256(ipfsURI, outputHash, nonce)
+     * @param submissionId ID of the committed submission
+     * @param ipfsURI IPFS hash pointing to model predictions
+     * @param outputHash Hash of the prediction outputs
+     * @param nonce Random value used in commitment
      */
     function revealSubmission(
         uint256 submissionId,
         string calldata ipfsURI,
         bytes32 outputHash,
         uint256 nonce
-    ) external onlyParticipant {
+    ) external onlyParticipant whenNotPaused {
+        require(getCurrentPhase() == ReviewStructs.Phase.Reveal, "Invalid phase");
         require(submissionId < nextSubmissionId, "Invalid submission ID");
+        
         ReviewStructs.Submission storage submission = submissions[submissionId];
         require(submission.participant == msg.sender, "Not your submission");
         require(!submission.isRevealed, "Already revealed");
         
-        // Verify the reveal matches the commit
         bytes32 expectedCommit = keccak256(abi.encodePacked(ipfsURI, outputHash, nonce));
         require(submission.commitHash == expectedCommit, "Invalid reveal");
         
@@ -162,10 +213,8 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
         emit SubmissionSubmitted(msg.sender, submissionId, ipfsURI, outputHash);
     }
 
-    /**
-     * @dev Commit a review for a submission (commit phase)
-     */
-    function commitReview(uint256 submissionId, bytes32 commitHash) external onlyParticipant {
+    function commitReview(uint256 submissionId, bytes32 commitHash) external onlyParticipant whenNotPaused {
+        require(getCurrentPhase() == ReviewStructs.Phase.ReviewCommit, "Invalid phase");
         require(submissionId < nextSubmissionId, "Invalid submission ID");
         require(submissions[submissionId].isRevealed, "Submission not revealed yet");
         require(submissions[submissionId].participant != msg.sender, "Cannot review own submission");
@@ -185,9 +234,14 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
     }
 
     /**
-     * @dev Reveal a review for a submission (reveal phase)
+     * @notice Reveal previously committed review score
+     * @dev Updates submission's running average score using safe math to prevent overflow
+     * @param submissionId ID of submission being reviewed
+     * @param score Review score (0-100)
+     * @param nonce Random value used in commitment
      */
-    function revealReview(uint256 submissionId, uint256 score, uint256 nonce) external onlyParticipant {
+    function revealReview(uint256 submissionId, uint256 score, uint256 nonce) external onlyParticipant whenNotPaused {
+        require(getCurrentPhase() == ReviewStructs.Phase.ReviewReveal, "Invalid phase");
         require(submissionId < nextSubmissionId, "Invalid submission ID");
         require(score >= MIN_SCORE && score <= MAX_SCORE, "Invalid score");
         
@@ -195,7 +249,6 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
         require(review.commitTime > 0, "Review not committed");
         require(!review.isRevealed, "Review already revealed");
         
-        // Verify the reveal matches the commit
         bytes32 expectedCommit = keccak256(abi.encodePacked(submissionId, score, nonce));
         require(review.commitHash == expectedCommit, "Invalid reveal");
         
@@ -203,22 +256,30 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
         review.revealTime = block.timestamp;
         review.isRevealed = true;
         
-        // Update submission aggregated score (simple average)
         ReviewStructs.Submission storage submission = submissions[submissionId];
+        
+        // Calculate running average safely to prevent overflow
+        // Formula: new_avg = (old_avg * count + new_score) / (count + 1)
+        if (submission.reviewCount == 0) {
+            submission.aggregatedScore = score;
+        } else {
+            uint256 totalScore = submission.aggregatedScore * submission.reviewCount;
+            submission.aggregatedScore = (totalScore + score) / (submission.reviewCount + 1);
+        }
         submission.reviewCount++;
-        submission.aggregatedScore = (submission.aggregatedScore * (submission.reviewCount - 1) + score) / submission.reviewCount;
         
         emit ReviewRevealed(msg.sender, submissionId, score);
     }
 
     /**
-     * @dev Finalize contest and distribute rewards
+     * @notice Finalize contest and distribute entire reward pool to winner
+     * @dev Winner is determined by highest aggregated review score. Can only be called once
      */
     function finalizeContest() external onlyOwner {
         require(!isFinalized, "Already finalized");
         require(submissionIds.length > 0, "No submissions to finalize");
         
-        // Find winner (highest score)
+        // Find submission with highest aggregated score
         uint256 bestSubmissionId = 0;
         uint256 bestScore = 0;
         
@@ -230,13 +291,19 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
             }
         }
         
-        // Distribute all rewards to winner
         if (bestSubmissionId > 0) {
             address winner = submissions[bestSubmissionId].participant;
-            uint256 totalRewards = address(this).balance;
-            participants[winner].totalRewards = totalRewards;
             
-            emit ContestFinalized(winner, totalRewards);
+            address[] memory winners = new address[](1);
+            winners[0] = winner;
+            uint256[] memory amounts = new uint256[](1);
+            amounts[0] = IContestManager(contestManager).getRewardPool(address(this));
+            
+            participants[winner].totalRewards = amounts[0];
+            
+            IContestManager(contestManager).distributeRewards(address(this), winners, amounts);
+            
+            emit ContestFinalized(winner, amounts[0]);
         }
         
         isFinalized = true;
@@ -244,25 +311,33 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
     }
 
     /**
-     * @dev Generate review assignments for all participants using pseudo-random assignment
-     * @notice Each participant will be assigned REVIEWS_PER_PARTICIPANT submissions to review
+     * @notice Pseudo-randomly assign peer reviews to participants
+     * @dev Uses blockhash + prevrandao for randomness (not perfect, consider Chainlink VRF for production)
+     * Each participant reviews up to REVIEWS_PER_PARTICIPANT submissions (excluding their own)
+     * QC address gets same number of assignments if set
      */
     function generateReviewAssignments() external onlyOwner {
         require(!isFinalized, "Contest already finalized");
         require(!assignmentsGenerated, "Assignments already generated");
         require(submissionIds.length > 0, "No submissions to review");
         require(participantList.length > 1, "Need at least 2 participants");
+        require(getCurrentPhase() == ReviewStructs.Phase.ReviewCommit || getCurrentPhase() == ReviewStructs.Phase.Reveal, "Invalid phase for assignment generation");
         
-        // Use block.prevrandao for pseudo-randomness (more secure than block.timestamp)
-        uint256 randomSeed = block.prevrandao + block.timestamp;
+        // Generate pseudo-random seed from multiple sources
+        uint256 randomSeed = uint256(keccak256(abi.encodePacked(
+            block.prevrandao,
+            block.timestamp,
+            blockhash(block.number - 1),
+            participantList.length,
+            submissionIds.length
+        )));
         
-        // Create a list of eligible submissions for each participant
+        // Assign reviews to regular participants
         for (uint256 i = 0; i < participantList.length; i++) {
             address reviewer = participantList[i];
             uint256[] memory eligibleSubmissions = new uint256[](submissionIds.length);
             uint256 eligibleCount = 0;
             
-            // Find all submissions that this participant didn't create and that are revealed
             for (uint256 j = 0; j < submissionIds.length; j++) {
                 uint256 submissionId = submissionIds[j];
                 if (submissions[submissionId].participant != reviewer && submissions[submissionId].isRevealed) {
@@ -271,51 +346,90 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
                 }
             }
             
-            // Determine how many reviews to assign (min of REVIEWS_PER_PARTICIPANT and eligible count)
             uint256 reviewsToAssign = eligibleCount < REVIEWS_PER_PARTICIPANT ? eligibleCount : REVIEWS_PER_PARTICIPANT;
             
-            // Pseudo-randomly select submissions using Fisher-Yates shuffle
             for (uint256 k = 0; k < reviewsToAssign; k++) {
-                // Generate pseudo-random index
                 uint256 randomIndex = uint256(keccak256(abi.encodePacked(randomSeed, reviewer, k))) % (eligibleCount - k);
                 uint256 selectedSubmissionId = eligibleSubmissions[randomIndex];
                 
-                // Assign the review
                 reviewAssignments[reviewer].push(selectedSubmissionId);
                 isAssignedReviewer[reviewer][selectedSubmissionId] = true;
                 
-                // Swap selected with last unselected (Fisher-Yates)
                 eligibleSubmissions[randomIndex] = eligibleSubmissions[eligibleCount - k - 1];
+            }
+        }
+        
+        // Assign reviews to QC if set
+        if (contestInfo.qcAddress != address(0)) {
+            uint256[] memory qcEligibleSubmissions = new uint256[](submissionIds.length);
+            uint256 qcEligibleCount = 0;
+            
+            for (uint256 j = 0; j < submissionIds.length; j++) {
+                if (submissions[submissionIds[j]].isRevealed) {
+                    qcEligibleSubmissions[qcEligibleCount] = submissionIds[j];
+                    qcEligibleCount++;
+                }
+            }
+            
+            uint256 qcReviewsToAssign = qcEligibleCount < REVIEWS_PER_PARTICIPANT ? qcEligibleCount : REVIEWS_PER_PARTICIPANT;
+            
+            for (uint256 k = 0; k < qcReviewsToAssign; k++) {
+                uint256 randomIndex = uint256(keccak256(abi.encodePacked(randomSeed, contestInfo.qcAddress, k))) % (qcEligibleCount - k);
+                uint256 selectedSubmissionId = qcEligibleSubmissions[randomIndex];
+                
+                reviewAssignments[contestInfo.qcAddress].push(selectedSubmissionId);
+                isAssignedReviewer[contestInfo.qcAddress][selectedSubmissionId] = true;
+                
+                qcEligibleSubmissions[randomIndex] = qcEligibleSubmissions[qcEligibleCount - k - 1];
             }
         }
         
         assignmentsGenerated = true;
         
-        // Count total assignments for event
         uint256 totalAssignments = 0;
         for (uint256 i = 0; i < participantList.length; i++) {
             totalAssignments += reviewAssignments[participantList[i]].length;
+        }
+        if (contestInfo.qcAddress != address(0)) {
+            totalAssignments += reviewAssignments[contestInfo.qcAddress].length;
         }
         
         emit ReviewAssignmentsGenerated(totalAssignments);
     }
 
     /**
-     * @dev Get review assignments for a specific reviewer
+     * @notice Slash participant's stake for misbehavior
+     * @dev Slashed amount is added to contest reward pool
+     * @param participant Address to slash
+     * @param amount Amount of stake to slash
+     * @param reason Human-readable reason for slashing
      */
-    function getReviewAssignmentsForReviewer(address reviewer) external view returns (uint256[] memory) {
+    function slashParticipantForMisbehavior(address participant, uint256 amount, string calldata reason) 
+        external 
+        onlyOwner 
+    {
+        require(participants[participant].isActive, "Not an active participant");
+        require(amount > 0, "Amount must be greater than 0");
+        require(participants[participant].stakedAmount >= amount, "Insufficient stake to slash");
+        
+        participants[participant].stakedAmount -= amount;
+        
+        IContestManager(contestManager).slashParticipant(address(this), participant, amount, reason);
+        
+        emit ParticipantSlashedInContest(participant, amount, reason);
+    }
+
+    function getReviewAssignmentsForReviewer(address reviewer) external view override returns (uint256[] memory) {
         return reviewAssignments[reviewer];
     }
 
-    /**
-     * @dev Check if a reviewer is assigned to a specific submission
-     */
-    function isReviewerAssigned(address reviewer, uint256 submissionId) external view returns (bool) {
+    function isReviewerAssigned(address reviewer, uint256 submissionId) external view override returns (bool) {
         return isAssignedReviewer[reviewer][submissionId];
     }
 
     /**
-     * @dev Claim rewards for participant
+     * @notice Claim rewards after contest finalization
+     * @dev Uses reentrancy guard and CEI pattern
      */
     function claimReward() external override nonReentrant {
         require(isFinalized, "Contest not finalized");
@@ -325,33 +439,23 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
         uint256 rewardAmount = participant.totalRewards;
         participant.totalRewards = 0;
         
-        payable(msg.sender).transfer(rewardAmount);
+        IERC20(infToken).transfer(msg.sender, rewardAmount);
         
         emit RewardClaimed(msg.sender, rewardAmount);
     }
 
-    /**
-     * @dev Get submission details
-     */
     function getSubmission(uint256 submissionId) external view returns (ReviewStructs.Submission memory) {
         return submissions[submissionId];
     }
 
-    /**
-     * @dev Get review score for a submission by reviewer (deprecated)
-     */
-    function getReview(address reviewer, uint256 submissionId) external view returns (uint256) {
-        return reviews[reviewer][submissionId];
-    }
-
-    /**
-     * @dev Get review details (commit-reveal) for a submission by reviewer
-     */
-    function getReviewCommit(address reviewer, uint256 submissionId) external view returns (ReviewStructs.Review memory) {
+    function getReviewCommit(address reviewer, uint256 submissionId) 
+        external 
+        view 
+        returns (ReviewStructs.Review memory) 
+    {
         return reviewCommits[reviewer][submissionId];
     }
 
-    // Essential view functions
     function getContestInfo() external view override returns (ContestInfo memory) {
         return contestInfo;
     }
@@ -364,9 +468,6 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
         return participantList;
     }
 
-    function getCurrentEpoch() external view override returns (uint256) {
-        return contestInfo.currentEpoch;
-    }
 
     function getClaimableRewards(address participant) external view override returns (uint256) {
         return participants[participant].totalRewards;
@@ -380,37 +481,101 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
         return contestInfo.status == ContestStatus.Active;
     }
 
-    // Admin functions
     function updateMetadata(string calldata newMetadataURI) external override onlyOwner {
+        string memory oldMetadataURI = contestInfo.metadataURI;
         contestInfo.metadataURI = newMetadataURI;
-    }
-
-    function getRewardSplit() external view override returns (RewardSplit memory) {
-        return contestInfo.rewardSplit;
-    }
-
-    function getScoringVerifier() external view returns (address) {
-        return contestInfo.scoringVerifier;
-    }
-
-    function getCurrentPhase() external view returns (ReviewStructs.Phase) {
-        // Simplified phase logic - in practice this would be more sophisticated
-        uint256 elapsed = block.timestamp - contestInfo.startTime;
-        uint256 fifth = contestInfo.duration / 5;
         
-        if (elapsed < fifth) {
+        emit MetadataUpdated(oldMetadataURI, newMetadataURI);
+    }
+    
+    /**
+     * @notice Emergency pause to stop all participant actions
+     * @dev Blocks join, submit, reveal, and review operations. Required before emergencyWithdraw
+     */
+    function pauseContest() external onlyOwner {
+        require(!paused, "Already paused");
+        require(!isFinalized, "Contest already finalized");
+        
+        paused = true;
+        contestInfo.status = ContestStatus.Paused;
+        
+        emit ContestPaused();
+    }
+    
+    function unpauseContest() external onlyOwner {
+        require(paused, "Not paused");
+        
+        paused = false;
+        contestInfo.status = ContestStatus.Active;
+        
+        emit ContestUnpaused();
+    }
+    
+    /**
+     * @notice Withdraw any tokens stuck in this contract (emergency only)
+     * @dev Requires contest to be paused first. Use if tokens are accidentally sent here
+     * Normal flow sends stakes to ContestManager, not here
+     */
+    function emergencyWithdraw() external onlyOwner {
+        require(paused, "Contest must be paused first");
+        
+        uint256 balance = IERC20(infToken).balanceOf(address(this));
+        if (balance > 0) {
+            IERC20(infToken).transfer(owner(), balance);
+        }
+        
+        emit EmergencyWithdraw(owner(), balance);
+    }
+
+    /**
+     * @notice QC can override aggregated score for quality control
+     * @dev Only works for submissions assigned to QC during review assignment
+     * @param submissionId Submission to override
+     * @param qcScore New score (0-100) replacing peer review average
+     */
+    function overrideSubmissionScore(uint256 submissionId, uint256 qcScore) external onlyQC {
+        require(submissionId < nextSubmissionId, "Invalid submission ID");
+        require(qcScore >= MIN_SCORE && qcScore <= MAX_SCORE, "Invalid score");
+        require(submissions[submissionId].isRevealed, "Submission not revealed");
+        require(isAssignedReviewer[msg.sender][submissionId], "QC not assigned to this submission");
+        
+        ReviewStructs.Submission storage submission = submissions[submissionId];
+        submission.aggregatedScore = qcScore;
+        
+        emit QCScoreOverride(submissionId, qcScore);
+    }
+    
+    event QCScoreOverride(uint256 indexed submissionId, uint256 qcScore);
+    event ParticipantLeft(address indexed participant);
+    event MetadataUpdated(string oldMetadataURI, string newMetadataURI);
+    event ContestPaused();
+    event ContestUnpaused();
+    event EmergencyWithdraw(address indexed owner, uint256 amount);
+    event ParticipantSlashedInContest(address indexed participant, uint256 amount, string reason);
+
+    /**
+     * @notice Calculate current contest phase based on elapsed time
+     * @dev Divides duration into 4 equal quarters: Commit → Reveal → ReviewCommit → ReviewReveal
+     * @return Current phase enum
+     */
+    function getCurrentPhase() public view returns (ReviewStructs.Phase) {
+        if (isFinalized) {
+            return ReviewStructs.Phase.Finalized;
+        }
+        
+        uint256 elapsed = block.timestamp - contestInfo.startTime;
+        uint256 quarter = contestInfo.duration / 4;
+        
+        if (elapsed < quarter) {
             return ReviewStructs.Phase.Commit;
-        } else if (elapsed < fifth * 2) {
+        } else if (elapsed < quarter * 2) {
             return ReviewStructs.Phase.Reveal;
-        } else if (elapsed < fifth * 3) {
+        } else if (elapsed < quarter * 3) {
             return ReviewStructs.Phase.ReviewCommit;
-        } else if (elapsed < fifth * 4) {
+        } else if (elapsed < contestInfo.duration) {
             return ReviewStructs.Phase.ReviewReveal;
         } else {
             return ReviewStructs.Phase.Finalized;
         }
     }
-
-    // Receive function to accept ETH for rewards
-    receive() external payable {}
 }

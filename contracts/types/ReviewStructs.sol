@@ -3,7 +3,8 @@ pragma solidity ^0.8.19;
 
 /**
  * @title ReviewStructs
- * @dev Data structures and EIP-712 type hashes for peer review system
+ * @notice Shared data structures for commit-reveal submission and peer review system
+ * @dev Contains EIP-712 type hashes for signature verification (currently unused, reserved for future)
  */
 library ReviewStructs {
     // EIP-712 Domain
@@ -77,14 +78,14 @@ library ReviewStructs {
     }
 
     /**
-     * @dev Enum for contest phases
+     * @notice Contest lifecycle phases (duration divided into 4 equal parts)
      */
     enum Phase {
-        Commit,         // Participants can commit their outputs
-        Reveal,         // Participants can reveal their outputs
-        ReviewCommit,   // Reviewers can commit their reviews
-        ReviewReveal,   // Reviewers can reveal their reviews
-        Finalized       // Contest is finalized, rewards distributed
+        Commit,         // Phase 1 (0-25%): Participants commit output hashes
+        Reveal,         // Phase 2 (25-50%): Participants reveal outputs with nonces
+        ReviewCommit,   // Phase 3 (50-75%): Reviewers commit review scores
+        ReviewReveal,   // Phase 4 (75-100%): Reviewers reveal scores, aggregation happens
+        Finalized       // After duration: Owner can finalize and distribute rewards
     }
 
     /**
