@@ -27,8 +27,14 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
     uint256 public minScore = 0;
     uint256 public maxScore = 1e6; // Max score for cosine similarity (1.0 * 1e6)
     uint256 public reviewCount; // Number of reviews required per output (k)
-    uint256 public outlierThreshold; // Deviation threshold for slashing (e.g., 200000 = 20%)
-    uint256 public slashRatio; // Percentage of stake to slash (e.g., 100 = 10%)
+    
+    // Reviewer incentive parameters (in 1e6 scale for precision)
+    uint256 public epsilonReward; // Reward threshold for average error (e.g., 100000 = 10%)
+    uint256 public epsilonSlash; // Slashing threshold for average error (e.g., 200000 = 20%)
+    uint256 public alpha; // Reputation update coefficient (e.g., 1000 = 1.0)
+    uint256 public beta; // Slashing coefficient (e.g., 100 = 10%)
+    uint256 public gamma; // Reward coefficient (e.g., 50 = 5%)
+    
     uint256 public maxParticipants; // Maximum number of participants allowed (0 = unlimited)
     uint256 public minStakeAmount; // Minimum stake required to join
     uint256 public joinPriceAdjustment; // Basis points (100 = 1%) - price increase rate per join
@@ -41,11 +47,13 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
     // Commit-reveal peer-review storage
     mapping(address => mapping(uint256 => ReviewStructs.Review)) public reviewCommits; // reviewer => outputId => Review
     mapping(uint256 => ReviewStructs.Review[]) public reviewsByOutput; // outputId => Review[]
-    mapping(uint256 => uint256[]) public scoresByOutput; // outputId => revealed scores[]
     mapping(address => uint256[]) public reviewedOutputsByReviewer; // reviewer => outputIds[]
-    mapping(uint256 => uint256) public medianScoreByOutput; // outputId => median score
-    mapping(address => uint256) public reviewerDeviation; // reviewer => average deviation
+    
+    // Reviewer trust and reputation system
+    mapping(address => uint256) public trustScore; // trust score (weight) of reviewer [1e6 scale]
+    mapping(address => uint256) public reputation; // reputation score of reviewer
     mapping(address => bool) public reviewerSlashed; // reviewer => is slashed
+    mapping(address => uint256) public reviewerRewards; // accumulated rewards for honest reviewing
     
     mapping(address => uint256[]) public reviewAssignments;
     mapping(address => mapping(uint256 => bool)) public isAssignedReviewer;
@@ -80,9 +88,7 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
      * @param duration Total contest duration in seconds (divided into 4 equal phases)
      * @param _contestManager Address of ContestManager for stake/reward handling
      * @param _infToken INF token address for staking and rewards
-     * @param _reviewCount Number of reviews required per output
-     * @param _outlierThreshold Deviation threshold for slashing (in 1e6, e.g., 200000 = 20%)
-     * @param _slashRatio Percentage of stake to slash (e.g., 100 = 10%)
+     * @param params Initialization parameters struct containing all configuration
      */
     function initialize(
         address creator,
@@ -90,17 +96,18 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
         uint256 duration,
         address _contestManager,
         address _infToken,
-        uint256 _reviewCount,
-        uint256 _outlierThreshold,
-        uint256 _slashRatio
+        IContest.InitParams calldata params
     ) external override {
         require(contestInfo.creator == address(0), "Already initialized");
         require(_contestManager != address(0), "Invalid contest manager");
         require(_infToken != address(0), "Invalid INF token");
         require(duration > 0, "Invalid duration");
-        require(_reviewCount > 0, "Review count must be > 0");
-        require(_outlierThreshold > 0 && _outlierThreshold <= 1e6, "Invalid outlier threshold");
-        require(_slashRatio <= 1000, "Slash ratio too high (max 100%)");
+        require(params.reviewCount > 0, "Review count must be > 0");
+        require(params.epsilonReward < params.epsilonSlash, "Reward threshold must be less than slash threshold");
+        require(params.epsilonSlash <= 1e6, "Slash threshold too high");
+        require(params.beta <= 1000, "Beta too high (max 100%)");
+        require(params.gamma <= 1000, "Gamma too high (max 100%)");
+        require(params.minStakeAmount > 0, "Min stake must be > 0");
         
         contestManager = _contestManager;
         infToken = _infToken;
@@ -114,17 +121,20 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
         });
         
         // Set peer-review configuration
-        reviewCount = _reviewCount;
-        outlierThreshold = _outlierThreshold;
-        slashRatio = _slashRatio;
+        reviewCount = params.reviewCount;
+        epsilonReward = params.epsilonReward;
+        epsilonSlash = params.epsilonSlash;
+        alpha = params.alpha;
+        beta = params.beta;
+        gamma = params.gamma;
         
-        // Set default contest parameters (can be updated by owner)
-        minStakeAmount = 100 * 10**18; // Default 100 INF tokens
-        currentJoinPrice = minStakeAmount;
-        joinPriceAdjustment = 100; // Default 1% increase per join (100 basis points)
-        maxParticipants = 0; // Default unlimited
+        // Set contest participation parameters
+        minStakeAmount = params.minStakeAmount;
+        currentJoinPrice = params.minStakeAmount;
+        joinPriceAdjustment = params.joinPriceAdjustment;
+        maxParticipants = params.maxParticipants;
         minScore = 0;
-        maxScore = 1e6; // Cosine similarity max (1.0 * 1e6)
+        maxScore = 1e6;
         
         nextSubmissionId = 1;
         _transferOwnership(creator);
@@ -162,6 +172,10 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
         });
         
         participantList.push(msg.sender);
+        
+        // Initialize trust score and reputation for new participant
+        trustScore[msg.sender] = 1e6; // Start with trust score of 1.0
+        reputation[msg.sender] = 0; // Start with neutral reputation
         
         // Update join price for next participant
         // newPrice = curPrice + curPrice * joinPriceAdjustment / 10000
@@ -322,7 +336,6 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
         
         // Store revealed review for aggregation
         reviewsByOutput[outputId].push(review);
-        scoresByOutput[outputId].push(score);
         reviewedOutputsByReviewer[msg.sender].push(outputId);
         
         // Update submission review count
@@ -431,21 +444,35 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
 
 
     /**
-     * @notice Aggregate reviews for a specific output by calculating median score
-     * @dev Calculates median of all submitted scores for an output
+     * @notice Aggregate reviews for a specific output by calculating weighted consensus score
+     * @dev Calculates weighted average using trust scores as weights
      * @param outputId Output/submission ID to aggregate reviews for
      */
     function aggregateReviews(uint256 outputId) public {
         require(submissions[outputId].participant != address(0), "Output does not exist");
-        require(scoresByOutput[outputId].length >= reviewCount, "Not enough reviews yet");
+        require(reviewsByOutput[outputId].length >= reviewCount, "Not enough reviews yet");
         
-        uint256[] memory scores = scoresByOutput[outputId];
-        uint256 median = _calculateMedian(scores);
+        ReviewStructs.Review[] memory reviews = reviewsByOutput[outputId];
         
-        medianScoreByOutput[outputId] = median;
-        submissions[outputId].aggregatedScore = median;
+        uint256 weightedSum = 0;
+        uint256 totalWeight = 0;
         
-        emit ReviewsAggregated(outputId, median, scores.length);
+        // Calculate weighted average using trust scores
+        for (uint256 i = 0; i < reviews.length; i++) {
+            address reviewer = reviews[i].reviewer;
+            uint256 score = reviews[i].score;
+            uint256 weight = trustScore[reviewer];
+            
+            weightedSum += weight * score;
+            totalWeight += weight;
+        }
+        
+        require(totalWeight > 0, "No valid trust weights");
+        
+        uint256 consensus = weightedSum / totalWeight;
+        submissions[outputId].aggregatedScore = consensus;
+        
+        emit ReviewsAggregated(outputId, consensus, reviews.length);
     }
     
     /**
@@ -464,57 +491,87 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
     }
     
     /**
-     * @notice Evaluate a reviewer's performance and slash if they're an outlier
-     * @dev Calculates average deviation from median scores. Slashes if deviation > threshold
-     * Formula: Δ_j = (1/n_j) * Σ|s_{i,j} - median_i|
+     * @notice Evaluate a reviewer's performance and apply slashing/rewards
+     * @dev Implements trust-reputation system with following steps:
+     * - Calculate error per review as absolute difference from consensus
+     * - Update accumulated error and review count
+     * - Calculate average error across all reviews
+     * - Update trust score based on average error
+     * - Update reputation with threshold-based rewards/penalties
+     * - Apply slashing if error exceeds threshold
+     * - Apply rewards if error is below reward threshold
      * @param reviewer Address of reviewer to evaluate
      */
     function evaluateReviewer(address reviewer) external {
         require(participants[reviewer].isActive || reviewedOutputsByReviewer[reviewer].length > 0, "Not a reviewer");
-        require(!reviewerSlashed[reviewer], "Reviewer already slashed");
         
         uint256[] memory outputIds = reviewedOutputsByReviewer[reviewer];
         require(outputIds.length > 0, "No reviews submitted");
         
-        uint256 totalDeviation = 0;
-        uint256 validReviewCount = 0;
+        uint256 totalError = 0;
+        uint256 reviewsCompleted = 0;
         
-        // Calculate total deviation from median for all reviews by this reviewer
+        // Process all reviews by this reviewer to calculate errors
         for (uint256 i = 0; i < outputIds.length; i++) {
             uint256 outputId = outputIds[i];
             ReviewStructs.Review storage review = reviewCommits[reviewer][outputId];
             
             // Only count revealed reviews for outputs that have been aggregated
-            if (review.isRevealed && (medianScoreByOutput[outputId] > 0 || scoresByOutput[outputId].length >= reviewCount)) {
-                // Ensure median is calculated
-                if (medianScoreByOutput[outputId] == 0) {
+            if (review.isRevealed) {
+                // Ensure consensus is calculated
+                uint256 consensus = submissions[outputId].aggregatedScore;
+                if (consensus == 0 && reviewsByOutput[outputId].length >= reviewCount) {
                     aggregateReviews(outputId);
+                    consensus = submissions[outputId].aggregatedScore;
                 }
                 
-                uint256 median = medianScoreByOutput[outputId];
-                uint256 deviation;
-                
-                if (review.score > median) {
-                    deviation = review.score - median;
-                } else {
-                    deviation = median - review.score;
+                if (consensus > 0) {
+                    // Calculate absolute error from consensus
+                    uint256 error;
+                    if (review.score > consensus) {
+                        error = review.score - consensus;
+                    } else {
+                        error = consensus - review.score;
+                    }
+                    
+                    totalError += error;
+                    reviewsCompleted++;
                 }
-                
-                totalDeviation += deviation;
-                validReviewCount++;
             }
         }
         
-        require(validReviewCount > 0, "No valid reviews to evaluate");
+        require(reviewsCompleted > 0, "No valid reviews to evaluate");
         
-        // Calculate average deviation: Δ_j = totalDeviation / validReviewCount
-        uint256 averageDeviation = totalDeviation / validReviewCount;
-        reviewerDeviation[reviewer] = averageDeviation;
+        // Calculate average error
+        uint256 avgError = totalError / reviewsCompleted;
         
-        // Slash if average deviation exceeds threshold
-        if (averageDeviation > outlierThreshold) {
+        // Update trust score using inverse relationship with error
+        trustScore[reviewer] = (1e12) / (1e6 + avgError);
+        
+        // Update reputation based on performance thresholds
+        int256 reputationDelta = 0;
+        if (avgError < epsilonReward) {
+            reputationDelta = int256(alpha);
+        } else if (avgError > epsilonSlash) {
+            reputationDelta = -int256(alpha);
+        }
+        
+        // Apply reputation update (careful with underflow)
+        if (reputationDelta >= 0) {
+            reputation[reviewer] += uint256(reputationDelta);
+        } else {
+            uint256 decrease = uint256(-reputationDelta);
+            if (reputation[reviewer] >= decrease) {
+                reputation[reviewer] -= decrease;
+            } else {
+                reputation[reviewer] = 0;
+            }
+        }
+        
+        // Apply slashing if average error exceeds threshold
+        if (avgError > epsilonSlash && !reviewerSlashed[reviewer]) {
             uint256 stakeAmount = participants[reviewer].stakedAmount;
-            uint256 slashAmount = (stakeAmount * slashRatio) / 1000; // slashRatio is in per-mille (1000 = 100%)
+            uint256 slashAmount = (stakeAmount * beta) / 1000;
             
             if (slashAmount > 0 && stakeAmount >= slashAmount) {
                 participants[reviewer].stakedAmount -= slashAmount;
@@ -524,14 +581,27 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
                     address(this),
                     reviewer,
                     slashAmount,
-                    "High deviation from median scores"
+                    "Average error exceeds slash threshold"
                 );
                 
-                emit ReviewerSlashed(reviewer, 0, slashAmount, averageDeviation);
+                emit ReviewerSlashed(reviewer, 0, slashAmount, avgError);
             }
         }
         
-        emit ReviewerEvaluated(reviewer, averageDeviation, validReviewCount);
+        // Apply reward if average error is below reward threshold
+        if (avgError < epsilonReward) {
+            uint256 stakeAmount = participants[reviewer].stakedAmount;
+            uint256 rewardAmount = (stakeAmount * gamma) / 1000;
+            
+            if (rewardAmount > 0) {
+                reviewerRewards[reviewer] += rewardAmount;
+                emit ReviewerRewarded(reviewer, rewardAmount, avgError);
+            }
+        }
+        
+        emit ReviewerEvaluated(reviewer, avgError, reviewsCompleted);
+        emit TrustScoreUpdated(reviewer, trustScore[reviewer]);
+        emit ReputationUpdated(reviewer, reputation[reviewer]);
     }
 
     function getReviewAssignmentsForReviewer(address reviewer) external view override returns (uint256[] memory) {
@@ -543,35 +613,19 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
     }
     
     /**
-     * @notice Calculate median of an array of scores
-     * @dev Sorts array in-place and returns middle value (or average of two middle values)
-     * @param scores Array of scores to find median of
-     * @return Median value
+     * @notice Claim accumulated rewards for honest reviewing
+     * @dev Transfers accumulated rewards from contest reward pool to reviewer
      */
-    function _calculateMedian(uint256[] memory scores) internal pure returns (uint256) {
-        require(scores.length > 0, "Empty scores array");
+    function claimReviewerRewards() external nonReentrant {
+        require(reviewerRewards[msg.sender] > 0, "No rewards to claim");
         
-        // Sort scores using bubble sort (simple but gas-inefficient for large arrays)
-        // For production, consider off-chain sorting with verification
-        for (uint256 i = 0; i < scores.length; i++) {
-            for (uint256 j = i + 1; j < scores.length; j++) {
-                if (scores[i] > scores[j]) {
-                    uint256 temp = scores[i];
-                    scores[i] = scores[j];
-                    scores[j] = temp;
-                }
-            }
-        }
+        uint256 rewardAmount = reviewerRewards[msg.sender];
+        reviewerRewards[msg.sender] = 0;
         
-        uint256 middle = scores.length / 2;
+        // Transfer rewards from contest reward pool
+        IERC20(infToken).transfer(msg.sender, rewardAmount);
         
-        if (scores.length % 2 == 0) {
-            // Even number of scores: return average of two middle values
-            return (scores[middle - 1] + scores[middle]) / 2;
-        } else {
-            // Odd number of scores: return middle value
-            return scores[middle];
-        }
+        emit ReviewerRewardsClaimed(msg.sender, rewardAmount);
     }
 
     /**
@@ -675,9 +729,13 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
     }
 
     
-    event ReviewsAggregated(uint256 indexed outputId, uint256 medianScore, uint256 reviewCount);
-    event ReviewerEvaluated(address indexed reviewer, uint256 averageDeviation, uint256 reviewCount);
-    event ReviewerSlashed(address indexed reviewer, uint256 indexed submissionId, uint256 amount, uint256 scoreDifference);
+    event ReviewsAggregated(uint256 indexed outputId, uint256 consensusScore, uint256 reviewCount);
+    event ReviewerEvaluated(address indexed reviewer, uint256 averageError, uint256 reviewCount);
+    event ReviewerSlashed(address indexed reviewer, uint256 indexed submissionId, uint256 amount, uint256 averageError);
+    event ReviewerRewarded(address indexed reviewer, uint256 rewardAmount, uint256 averageError);
+    event ReviewerRewardsClaimed(address indexed reviewer, uint256 amount);
+    event TrustScoreUpdated(address indexed reviewer, uint256 newTrustScore);
+    event ReputationUpdated(address indexed reviewer, uint256 newReputation);
     event ParticipantLeft(address indexed participant);
     event MetadataUpdated(string oldMetadataURI, string newMetadataURI);
     event ContestPaused();
@@ -691,43 +749,54 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
      * @param _minStakeAmount Minimum stake amount required
      * @param _joinPriceAdjustment Join price increase rate in basis points (100 = 1%)
      * @param _reviewCount Number of reviews required per output
-     * @param _outlierThreshold Deviation threshold for slashing
-     * @param _slashRatio Percentage of stake to slash
+     * @param _epsilonReward Reward threshold for average error
+     * @param _epsilonSlash Slashing threshold for average error
+     * @param _alpha Reputation update coefficient
+     * @param _beta Slashing coefficient
+     * @param _gamma Reward coefficient
      */
     function updateContestParameters(
         uint256 _maxParticipants,
         uint256 _minStakeAmount,
         uint256 _joinPriceAdjustment,
         uint256 _reviewCount,
-        uint256 _outlierThreshold,
-        uint256 _slashRatio
+        uint256 _epsilonReward,
+        uint256 _epsilonSlash,
+        uint256 _alpha,
+        uint256 _beta,
+        uint256 _gamma
     ) external onlyOwner {
         require(submissionIds.length == 0, "Cannot update after submissions started");
         require(_reviewCount > 0, "Review count must be > 0");
-        require(_outlierThreshold > 0 && _outlierThreshold <= 1e6, "Invalid outlier threshold");
-        require(_slashRatio <= 1000, "Slash ratio too high (max 100%)");
+        require(_epsilonReward < _epsilonSlash, "Reward threshold must be less than slash threshold");
+        require(_epsilonSlash <= 1e6, "Slash threshold too high");
+        require(_beta <= 1000, "Beta too high (max 100%)");
+        require(_gamma <= 1000, "Gamma too high (max 100%)");
         
         maxParticipants = _maxParticipants;
         minStakeAmount = _minStakeAmount;
         joinPriceAdjustment = _joinPriceAdjustment;
         reviewCount = _reviewCount;
-        outlierThreshold = _outlierThreshold;
-        slashRatio = _slashRatio;
+        epsilonReward = _epsilonReward;
+        epsilonSlash = _epsilonSlash;
+        alpha = _alpha;
+        beta = _beta;
+        gamma = _gamma;
         
         // Reset current join price if min stake changed
         if (participantList.length == 0) {
             currentJoinPrice = _minStakeAmount;
         }
         
-        emit ContestParametersUpdated(_maxParticipants, _minStakeAmount, _reviewCount, _outlierThreshold, _slashRatio);
+        emit ContestParametersUpdated(_maxParticipants, _minStakeAmount, _reviewCount, _epsilonReward, _epsilonSlash);
     }
     
     event ContestParametersUpdated(
         uint256 maxParticipants, 
         uint256 minStakeAmount, 
         uint256 reviewCount,
-        uint256 outlierThreshold,
-        uint256 slashRatio
+        uint256 epsilonReward,
+        uint256 epsilonSlash
     );
 
     /**

@@ -11,8 +11,14 @@ interface IContestManager {
         uint256 duration;
         uint256 stakingAmount;
         uint256 reviewCount;
-        uint256 outlierThreshold;
-        uint256 slashRatio;
+        uint256 epsilonReward;
+        uint256 epsilonSlash;
+        uint256 alpha;
+        uint256 beta;
+        uint256 gamma;
+        uint256 minStakeAmount;
+        uint256 maxParticipants;
+        uint256 joinPriceAdjustment;
     }
 
     struct StakeInfo {

@@ -6,6 +6,7 @@ import "@openzeppelin/contracts/proxy/Clones.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "./interfaces/IContestManager.sol";
+import "./interfaces/IContest.sol";
 import "./Contest.sol";
 
 /**
@@ -46,15 +47,25 @@ contract ContestManager is IContestManager, Ownable, ReentrancyGuard {
     function createContest(ContestConfig calldata config) external override returns (address contestAddress) {
         contestAddress = contestTemplate.clone();
         
+        IContest.InitParams memory params = IContest.InitParams({
+            reviewCount: config.reviewCount,
+            epsilonReward: config.epsilonReward,
+            epsilonSlash: config.epsilonSlash,
+            alpha: config.alpha,
+            beta: config.beta,
+            gamma: config.gamma,
+            minStakeAmount: config.minStakeAmount,
+            maxParticipants: config.maxParticipants,
+            joinPriceAdjustment: config.joinPriceAdjustment
+        });
+        
         Contest(contestAddress).initialize(
             msg.sender,
             config.metadataURI,
             config.duration,
             address(this),
             infToken,
-            config.reviewCount,
-            config.outlierThreshold,
-            config.slashRatio
+            params
         );
         
         allContests.push(contestAddress);

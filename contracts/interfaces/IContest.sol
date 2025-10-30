@@ -30,15 +30,25 @@ interface IContest {
         uint256 stakedAmount;
     }
 
+    struct InitParams {
+        uint256 reviewCount;
+        uint256 epsilonReward;
+        uint256 epsilonSlash;
+        uint256 alpha;
+        uint256 beta;
+        uint256 gamma;
+        uint256 minStakeAmount;
+        uint256 maxParticipants;
+        uint256 joinPriceAdjustment;
+    }
+
     function initialize(
         address creator,
         string calldata metadataURI,
         uint256 duration,
         address contestManager,
         address infToken,
-        uint256 reviewCount,
-        uint256 outlierThreshold,
-        uint256 slashRatio
+        InitParams calldata params
     ) external;
 
     function joinContest(uint256 stakeAmount) external;
