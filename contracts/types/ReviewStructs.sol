@@ -56,12 +56,15 @@ library ReviewStructs {
     }
 
     /**
-     * @dev Structure for a review with commit-reveal
+     * @dev Structure for a peer review with commit-reveal pattern
+     * Uses cosine similarity scoring [0, 1e6] for normalized comparison
+     * Commit-reveal prevents front-running and score manipulation
      */
     struct Review {
         address reviewer;        // Who submitted the review
-        bytes32 commitHash;      // Hash of (submissionId, score, nonce)
-        uint256 score;           // Actual score (0 until revealed)
+        uint256 outputId;        // ID of output/submission being reviewed
+        bytes32 commitHash;      // Hash of (outputId, score, nonce)
+        uint256 score;           // Normalized score [0, 1e6] (cosine similarity * 1e6) - 0 until revealed
         uint256 commitTime;      // When the review was committed
         uint256 revealTime;      // When the review was revealed
         bool isRevealed;         // Whether the review has been revealed

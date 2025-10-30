@@ -23,14 +23,30 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
     uint256 public nextSubmissionId = 1;
     bool public isFinalized;
     
-    uint256 public constant MIN_SCORE = 0;
-    uint256 public constant MAX_SCORE = 100;
-    uint256 public constant REVIEWS_PER_PARTICIPANT = 5; // Max reviews assigned per participant
+    // Contest configuration - set during initialization
+    uint256 public minScore = 0;
+    uint256 public maxScore = 1e6; // Max score for cosine similarity (1.0 * 1e6)
+    uint256 public reviewCount; // Number of reviews required per output (k)
+    uint256 public outlierThreshold; // Deviation threshold for slashing (e.g., 200000 = 20%)
+    uint256 public slashRatio; // Percentage of stake to slash (e.g., 100 = 10%)
+    uint256 public maxParticipants; // Maximum number of participants allowed (0 = unlimited)
+    uint256 public minStakeAmount; // Minimum stake required to join
+    uint256 public joinPriceAdjustment; // Basis points (100 = 1%) - price increase rate per join
+    uint256 public currentJoinPrice; // Current price to join (starts at minStakeAmount)
     
     mapping(address => Participant) public participants;
     mapping(uint256 => ReviewStructs.Submission) public submissions;
     mapping(address => uint256[]) public participantSubmissions;
-    mapping(address => mapping(uint256 => ReviewStructs.Review)) public reviewCommits;
+    
+    // Commit-reveal peer-review storage
+    mapping(address => mapping(uint256 => ReviewStructs.Review)) public reviewCommits; // reviewer => outputId => Review
+    mapping(uint256 => ReviewStructs.Review[]) public reviewsByOutput; // outputId => Review[]
+    mapping(uint256 => uint256[]) public scoresByOutput; // outputId => revealed scores[]
+    mapping(address => uint256[]) public reviewedOutputsByReviewer; // reviewer => outputIds[]
+    mapping(uint256 => uint256) public medianScoreByOutput; // outputId => median score
+    mapping(address => uint256) public reviewerDeviation; // reviewer => average deviation
+    mapping(address => bool) public reviewerSlashed; // reviewer => is slashed
+    
     mapping(address => uint256[]) public reviewAssignments;
     mapping(address => mapping(uint256 => bool)) public isAssignedReviewer;
     
@@ -40,7 +56,7 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
     bool public paused;
     
     modifier onlyParticipant() {
-        require(participants[msg.sender].isActive || msg.sender == contestInfo.qcAddress, "Not an active participant or QC");
+        require(participants[msg.sender].isActive, "Not an active participant");
         _;
     }
     
@@ -54,11 +70,6 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
         _;
     }
 
-    modifier onlyQC() {
-        require(msg.sender == contestInfo.qcAddress, "Only QC");
-        _;
-    }
-
     constructor() Ownable(msg.sender) {}
 
     /**
@@ -69,7 +80,9 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
      * @param duration Total contest duration in seconds (divided into 4 equal phases)
      * @param _contestManager Address of ContestManager for stake/reward handling
      * @param _infToken INF token address for staking and rewards
-     * @param _qcAddress Optional quality control address with special privileges
+     * @param _reviewCount Number of reviews required per output
+     * @param _outlierThreshold Deviation threshold for slashing (in 1e6, e.g., 200000 = 20%)
+     * @param _slashRatio Percentage of stake to slash (e.g., 100 = 10%)
      */
     function initialize(
         address creator,
@@ -77,12 +90,17 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
         uint256 duration,
         address _contestManager,
         address _infToken,
-        address _qcAddress
+        uint256 _reviewCount,
+        uint256 _outlierThreshold,
+        uint256 _slashRatio
     ) external override {
         require(contestInfo.creator == address(0), "Already initialized");
         require(_contestManager != address(0), "Invalid contest manager");
         require(_infToken != address(0), "Invalid INF token");
         require(duration > 0, "Invalid duration");
+        require(_reviewCount > 0, "Review count must be > 0");
+        require(_outlierThreshold > 0 && _outlierThreshold <= 1e6, "Invalid outlier threshold");
+        require(_slashRatio <= 1000, "Slash ratio too high (max 100%)");
         
         contestManager = _contestManager;
         infToken = _infToken;
@@ -92,9 +110,21 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
             metadataURI: metadataURI,
             startTime: block.timestamp,
             duration: duration,
-            status: ContestStatus.Active,
-            qcAddress: _qcAddress
+            status: ContestStatus.Active
         });
+        
+        // Set peer-review configuration
+        reviewCount = _reviewCount;
+        outlierThreshold = _outlierThreshold;
+        slashRatio = _slashRatio;
+        
+        // Set default contest parameters (can be updated by owner)
+        minStakeAmount = 100 * 10**18; // Default 100 INF tokens
+        currentJoinPrice = minStakeAmount;
+        joinPriceAdjustment = 100; // Default 1% increase per join (100 basis points)
+        maxParticipants = 0; // Default unlimited
+        minScore = 0;
+        maxScore = 1e6; // Cosine similarity max (1.0 * 1e6)
         
         nextSubmissionId = 1;
         _transferOwnership(creator);
@@ -105,12 +135,21 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
     /**
      * @notice Join contest by staking INF tokens
      * @dev Transfers stake to ContestManager, not this contract. Uses CEI pattern for reentrancy safety
-     * @param stakeAmount Amount of INF tokens to stake
+     * Enforces participant limit and dynamic pricing that increases with each join
+     * @param stakeAmount Amount of INF tokens to stake (must be >= currentJoinPrice)
      */
     function joinContest(uint256 stakeAmount) external override whenNotPaused {
         require(!participants[msg.sender].isActive, "Already joined");
-        require(stakeAmount > 0, "Stake amount must be greater than 0");
         require(contestInfo.status == ContestStatus.Active, "Contest not active");
+        
+        // Check participant limit
+        if (maxParticipants > 0) {
+            require(participantList.length < maxParticipants, "Contest is full");
+        }
+        
+        // Check minimum stake requirement (dynamic price)
+        require(stakeAmount >= currentJoinPrice, "Stake amount below current join price");
+        require(stakeAmount >= minStakeAmount, "Stake amount below minimum");
         
         // Check-Effects-Interactions pattern for reentrancy protection
         participants[msg.sender] = Participant({
@@ -124,6 +163,12 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
         
         participantList.push(msg.sender);
         
+        // Update join price for next participant
+        // newPrice = curPrice + curPrice * joinPriceAdjustment / 10000
+        if (joinPriceAdjustment > 0) {
+            currentJoinPrice = currentJoinPrice + (currentJoinPrice * joinPriceAdjustment / 10000);
+        }
+        
         // External interactions last
         IERC20(infToken).transferFrom(msg.sender, contestManager, stakeAmount);
         IContestManager(contestManager).recordStake(msg.sender, stakeAmount);
@@ -131,13 +176,21 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
         emit ParticipantJoined(msg.sender, block.timestamp);
     }
 
+    /**
+     * @notice Leave contest and get refunded the staked amount
+     * @dev Can only leave during Commit phase and before making any submissions
+     * Stake is returned to the participant from ContestManager
+     */
     function leaveContest() external whenNotPaused {
         require(participants[msg.sender].isActive, "Not a participant");
         require(!isFinalized, "Contest already finalized");
         require(getCurrentPhase() == ReviewStructs.Phase.Commit, "Cannot leave after commit phase");
         require(participantSubmissions[msg.sender].length == 0, "Cannot leave after submitting");
         
+        uint256 refundAmount = participants[msg.sender].stakedAmount;
+        
         participants[msg.sender].isActive = false;
+        participants[msg.sender].stakedAmount = 0;
         
         // Remove from participant list - optimized
         uint256 length = participantList.length;
@@ -148,6 +201,9 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
                 break;
             }
         }
+        
+        // Refund stake through ContestManager
+        IContestManager(contestManager).refundStake(address(this), msg.sender, refundAmount);
         
         emit ParticipantLeft(msg.sender);
     }
@@ -196,9 +252,9 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
         uint256 nonce
     ) external onlyParticipant whenNotPaused {
         require(getCurrentPhase() == ReviewStructs.Phase.Reveal, "Invalid phase");
-        require(submissionId < nextSubmissionId, "Invalid submission ID");
         
         ReviewStructs.Submission storage submission = submissions[submissionId];
+        require(submission.participant != address(0), "Submission does not exist");
         require(submission.participant == msg.sender, "Not your submission");
         require(!submission.isRevealed, "Already revealed");
         
@@ -213,16 +269,24 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
         emit SubmissionSubmitted(msg.sender, submissionId, ipfsURI, outputHash);
     }
 
-    function commitReview(uint256 submissionId, bytes32 commitHash) external onlyParticipant whenNotPaused {
+    /**
+     * @notice Commit a review for an output during ReviewCommit phase
+     * @dev Commitment hash should be keccak256(abi.encodePacked(outputId, score, nonce))
+     * This prevents front-running and ensures reviewers commit to their scores before seeing others
+     * @param outputId ID of output/submission to review
+     * @param commitHash Hash of (outputId, score, nonce) - must match in reveal phase
+     */
+    function commitReview(uint256 outputId, bytes32 commitHash) external onlyParticipant whenNotPaused {
         require(getCurrentPhase() == ReviewStructs.Phase.ReviewCommit, "Invalid phase");
-        require(submissionId < nextSubmissionId, "Invalid submission ID");
-        require(submissions[submissionId].isRevealed, "Submission not revealed yet");
-        require(submissions[submissionId].participant != msg.sender, "Cannot review own submission");
-        require(reviewCommits[msg.sender][submissionId].commitTime == 0, "Review already committed");
-        require(isAssignedReviewer[msg.sender][submissionId], "Not assigned to review this submission");
+        require(submissions[outputId].participant != address(0), "Output does not exist");
+        require(submissions[outputId].isRevealed, "Output not revealed yet");
+        require(submissions[outputId].participant != msg.sender, "Cannot review own output");
+        require(reviewCommits[msg.sender][outputId].commitTime == 0, "Review already committed");
+        require(isAssignedReviewer[msg.sender][outputId], "Not assigned to review this output");
         
-        reviewCommits[msg.sender][submissionId] = ReviewStructs.Review({
+        reviewCommits[msg.sender][outputId] = ReviewStructs.Review({
             reviewer: msg.sender,
+            outputId: outputId,
             commitHash: commitHash,
             score: 0,
             commitTime: block.timestamp,
@@ -230,45 +294,41 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
             isRevealed: false
         });
         
-        emit ReviewCommitted(msg.sender, submissionId, commitHash);
+        emit ReviewCommitted(msg.sender, outputId, commitHash);
     }
 
     /**
-     * @notice Reveal previously committed review score
-     * @dev Updates submission's running average score using safe math to prevent overflow
-     * @param submissionId ID of submission being reviewed
-     * @param score Review score (0-100)
+     * @notice Reveal previously committed review score during ReviewReveal phase
+     * @dev Updates output's running average and stores score for median calculation
+     * @param outputId ID of output being reviewed
+     * @param score Review score [0, 1e6] (cosine similarity * 1e6)
      * @param nonce Random value used in commitment
      */
-    function revealReview(uint256 submissionId, uint256 score, uint256 nonce) external onlyParticipant whenNotPaused {
+    function revealReview(uint256 outputId, uint256 score, uint256 nonce) external onlyParticipant whenNotPaused {
         require(getCurrentPhase() == ReviewStructs.Phase.ReviewReveal, "Invalid phase");
-        require(submissionId < nextSubmissionId, "Invalid submission ID");
-        require(score >= MIN_SCORE && score <= MAX_SCORE, "Invalid score");
+        require(submissions[outputId].participant != address(0), "Output does not exist");
+        require(score >= minScore && score <= maxScore, "Invalid score");
         
-        ReviewStructs.Review storage review = reviewCommits[msg.sender][submissionId];
+        ReviewStructs.Review storage review = reviewCommits[msg.sender][outputId];
         require(review.commitTime > 0, "Review not committed");
         require(!review.isRevealed, "Review already revealed");
         
-        bytes32 expectedCommit = keccak256(abi.encodePacked(submissionId, score, nonce));
+        bytes32 expectedCommit = keccak256(abi.encodePacked(outputId, score, nonce));
         require(review.commitHash == expectedCommit, "Invalid reveal");
         
         review.score = score;
         review.revealTime = block.timestamp;
         review.isRevealed = true;
         
-        ReviewStructs.Submission storage submission = submissions[submissionId];
+        // Store revealed review for aggregation
+        reviewsByOutput[outputId].push(review);
+        scoresByOutput[outputId].push(score);
+        reviewedOutputsByReviewer[msg.sender].push(outputId);
         
-        // Calculate running average safely to prevent overflow
-        // Formula: new_avg = (old_avg * count + new_score) / (count + 1)
-        if (submission.reviewCount == 0) {
-            submission.aggregatedScore = score;
-        } else {
-            uint256 totalScore = submission.aggregatedScore * submission.reviewCount;
-            submission.aggregatedScore = (totalScore + score) / (submission.reviewCount + 1);
-        }
-        submission.reviewCount++;
+        // Update submission review count
+        submissions[outputId].reviewCount++;
         
-        emit ReviewRevealed(msg.sender, submissionId, score);
+        emit ReviewRevealed(msg.sender, outputId, score);
     }
 
     /**
@@ -313,7 +373,7 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
     /**
      * @notice Pseudo-randomly assign peer reviews to participants
      * @dev Uses blockhash + prevrandao for randomness (not perfect, consider Chainlink VRF for production)
-     * Each participant reviews up to REVIEWS_PER_PARTICIPANT submissions (excluding their own)
+     * Each participant reviews up to reviewsPerParticipant submissions (excluding their own)
      * QC address gets same number of assignments if set
      */
     function generateReviewAssignments() external onlyOwner {
@@ -346,7 +406,7 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
                 }
             }
             
-            uint256 reviewsToAssign = eligibleCount < REVIEWS_PER_PARTICIPANT ? eligibleCount : REVIEWS_PER_PARTICIPANT;
+            uint256 reviewsToAssign = eligibleCount < reviewsPerParticipant ? eligibleCount : reviewsPerParticipant;
             
             for (uint256 k = 0; k < reviewsToAssign; k++) {
                 uint256 randomIndex = uint256(keccak256(abi.encodePacked(randomSeed, reviewer, k))) % (eligibleCount - k);
@@ -359,64 +419,119 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
             }
         }
         
-        // Assign reviews to QC if set
-        if (contestInfo.qcAddress != address(0)) {
-            uint256[] memory qcEligibleSubmissions = new uint256[](submissionIds.length);
-            uint256 qcEligibleCount = 0;
-            
-            for (uint256 j = 0; j < submissionIds.length; j++) {
-                if (submissions[submissionIds[j]].isRevealed) {
-                    qcEligibleSubmissions[qcEligibleCount] = submissionIds[j];
-                    qcEligibleCount++;
-                }
-            }
-            
-            uint256 qcReviewsToAssign = qcEligibleCount < REVIEWS_PER_PARTICIPANT ? qcEligibleCount : REVIEWS_PER_PARTICIPANT;
-            
-            for (uint256 k = 0; k < qcReviewsToAssign; k++) {
-                uint256 randomIndex = uint256(keccak256(abi.encodePacked(randomSeed, contestInfo.qcAddress, k))) % (qcEligibleCount - k);
-                uint256 selectedSubmissionId = qcEligibleSubmissions[randomIndex];
-                
-                reviewAssignments[contestInfo.qcAddress].push(selectedSubmissionId);
-                isAssignedReviewer[contestInfo.qcAddress][selectedSubmissionId] = true;
-                
-                qcEligibleSubmissions[randomIndex] = qcEligibleSubmissions[qcEligibleCount - k - 1];
-            }
-        }
-        
         assignmentsGenerated = true;
         
         uint256 totalAssignments = 0;
         for (uint256 i = 0; i < participantList.length; i++) {
             totalAssignments += reviewAssignments[participantList[i]].length;
         }
-        if (contestInfo.qcAddress != address(0)) {
-            totalAssignments += reviewAssignments[contestInfo.qcAddress].length;
-        }
         
         emit ReviewAssignmentsGenerated(totalAssignments);
     }
 
+
     /**
-     * @notice Slash participant's stake for misbehavior
-     * @dev Slashed amount is added to contest reward pool
-     * @param participant Address to slash
-     * @param amount Amount of stake to slash
-     * @param reason Human-readable reason for slashing
+     * @notice Aggregate reviews for a specific output by calculating median score
+     * @dev Calculates median of all submitted scores for an output
+     * @param outputId Output/submission ID to aggregate reviews for
      */
-    function slashParticipantForMisbehavior(address participant, uint256 amount, string calldata reason) 
-        external 
-        onlyOwner 
-    {
-        require(participants[participant].isActive, "Not an active participant");
-        require(amount > 0, "Amount must be greater than 0");
-        require(participants[participant].stakedAmount >= amount, "Insufficient stake to slash");
+    function aggregateReviews(uint256 outputId) public {
+        require(submissions[outputId].participant != address(0), "Output does not exist");
+        require(scoresByOutput[outputId].length >= reviewCount, "Not enough reviews yet");
         
-        participants[participant].stakedAmount -= amount;
+        uint256[] memory scores = scoresByOutput[outputId];
+        uint256 median = _calculateMedian(scores);
         
-        IContestManager(contestManager).slashParticipant(address(this), participant, amount, reason);
+        medianScoreByOutput[outputId] = median;
+        submissions[outputId].aggregatedScore = median;
         
-        emit ParticipantSlashedInContest(participant, amount, reason);
+        emit ReviewsAggregated(outputId, median, scores.length);
+    }
+    
+    /**
+     * @notice Aggregate reviews for all outputs in the contest
+     * @dev Batch operation to calculate median for all outputs that have enough reviews
+     * @param contestId Contest ID (should match current contest)
+     */
+    function aggregateReviews(uint256 contestId) external {
+        require(contestId == uint256(uint160(address(this))), "Invalid contest ID");
+        
+        for (uint256 i = 1; i < nextSubmissionId; i++) {
+            if (scoresByOutput[i].length >= reviewCount) {
+                aggregateReviews(i);
+            }
+        }
+    }
+    
+    /**
+     * @notice Evaluate a reviewer's performance and slash if they're an outlier
+     * @dev Calculates average deviation from median scores. Slashes if deviation > threshold
+     * Formula: Δ_j = (1/n_j) * Σ|s_{i,j} - median_i|
+     * @param reviewer Address of reviewer to evaluate
+     */
+    function evaluateReviewer(address reviewer) external {
+        require(participants[reviewer].isActive || reviewedOutputsByReviewer[reviewer].length > 0, "Not a reviewer");
+        require(!reviewerSlashed[reviewer], "Reviewer already slashed");
+        
+        uint256[] memory outputIds = reviewedOutputsByReviewer[reviewer];
+        require(outputIds.length > 0, "No reviews submitted");
+        
+        uint256 totalDeviation = 0;
+        uint256 validReviewCount = 0;
+        
+        // Calculate total deviation from median for all reviews by this reviewer
+        for (uint256 i = 0; i < outputIds.length; i++) {
+            uint256 outputId = outputIds[i];
+            ReviewStructs.Review storage review = reviewCommits[reviewer][outputId];
+            
+            // Only count revealed reviews for outputs that have been aggregated
+            if (review.isRevealed && (medianScoreByOutput[outputId] > 0 || scoresByOutput[outputId].length >= reviewCount)) {
+                // Ensure median is calculated
+                if (medianScoreByOutput[outputId] == 0) {
+                    aggregateReviews(outputId);
+                }
+                
+                uint256 median = medianScoreByOutput[outputId];
+                uint256 deviation;
+                
+                if (review.score > median) {
+                    deviation = review.score - median;
+                } else {
+                    deviation = median - review.score;
+                }
+                
+                totalDeviation += deviation;
+                validReviewCount++;
+            }
+        }
+        
+        require(validReviewCount > 0, "No valid reviews to evaluate");
+        
+        // Calculate average deviation: Δ_j = totalDeviation / validReviewCount
+        uint256 averageDeviation = totalDeviation / validReviewCount;
+        reviewerDeviation[reviewer] = averageDeviation;
+        
+        // Slash if average deviation exceeds threshold
+        if (averageDeviation > outlierThreshold) {
+            uint256 stakeAmount = participants[reviewer].stakedAmount;
+            uint256 slashAmount = (stakeAmount * slashRatio) / 1000; // slashRatio is in per-mille (1000 = 100%)
+            
+            if (slashAmount > 0 && stakeAmount >= slashAmount) {
+                participants[reviewer].stakedAmount -= slashAmount;
+                reviewerSlashed[reviewer] = true;
+                
+                IContestManager(contestManager).slashParticipant(
+                    address(this),
+                    reviewer,
+                    slashAmount,
+                    "High deviation from median scores"
+                );
+                
+                emit ReviewerSlashed(reviewer, 0, slashAmount, averageDeviation);
+            }
+        }
+        
+        emit ReviewerEvaluated(reviewer, averageDeviation, validReviewCount);
     }
 
     function getReviewAssignmentsForReviewer(address reviewer) external view override returns (uint256[] memory) {
@@ -425,6 +540,38 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
 
     function isReviewerAssigned(address reviewer, uint256 submissionId) external view override returns (bool) {
         return isAssignedReviewer[reviewer][submissionId];
+    }
+    
+    /**
+     * @notice Calculate median of an array of scores
+     * @dev Sorts array in-place and returns middle value (or average of two middle values)
+     * @param scores Array of scores to find median of
+     * @return Median value
+     */
+    function _calculateMedian(uint256[] memory scores) internal pure returns (uint256) {
+        require(scores.length > 0, "Empty scores array");
+        
+        // Sort scores using bubble sort (simple but gas-inefficient for large arrays)
+        // For production, consider off-chain sorting with verification
+        for (uint256 i = 0; i < scores.length; i++) {
+            for (uint256 j = i + 1; j < scores.length; j++) {
+                if (scores[i] > scores[j]) {
+                    uint256 temp = scores[i];
+                    scores[i] = scores[j];
+                    scores[j] = temp;
+                }
+            }
+        }
+        
+        uint256 middle = scores.length / 2;
+        
+        if (scores.length % 2 == 0) {
+            // Even number of scores: return average of two middle values
+            return (scores[middle - 1] + scores[middle]) / 2;
+        } else {
+            // Odd number of scores: return middle value
+            return scores[middle];
+        }
     }
 
     /**
@@ -527,35 +674,67 @@ contract Contest is IContest, Ownable, ReentrancyGuard {
         emit EmergencyWithdraw(owner(), balance);
     }
 
-    /**
-     * @notice QC can override aggregated score for quality control
-     * @dev Only works for submissions assigned to QC during review assignment
-     * @param submissionId Submission to override
-     * @param qcScore New score (0-100) replacing peer review average
-     */
-    function overrideSubmissionScore(uint256 submissionId, uint256 qcScore) external onlyQC {
-        require(submissionId < nextSubmissionId, "Invalid submission ID");
-        require(qcScore >= MIN_SCORE && qcScore <= MAX_SCORE, "Invalid score");
-        require(submissions[submissionId].isRevealed, "Submission not revealed");
-        require(isAssignedReviewer[msg.sender][submissionId], "QC not assigned to this submission");
-        
-        ReviewStructs.Submission storage submission = submissions[submissionId];
-        submission.aggregatedScore = qcScore;
-        
-        emit QCScoreOverride(submissionId, qcScore);
-    }
     
-    event QCScoreOverride(uint256 indexed submissionId, uint256 qcScore);
+    event ReviewsAggregated(uint256 indexed outputId, uint256 medianScore, uint256 reviewCount);
+    event ReviewerEvaluated(address indexed reviewer, uint256 averageDeviation, uint256 reviewCount);
+    event ReviewerSlashed(address indexed reviewer, uint256 indexed submissionId, uint256 amount, uint256 scoreDifference);
     event ParticipantLeft(address indexed participant);
     event MetadataUpdated(string oldMetadataURI, string newMetadataURI);
     event ContestPaused();
     event ContestUnpaused();
     event EmergencyWithdraw(address indexed owner, uint256 amount);
-    event ParticipantSlashedInContest(address indexed participant, uint256 amount, string reason);
+
+    /**
+     * @notice Update contest parameters (owner only)
+     * @dev Can only be called before contest starts accepting submissions
+     * @param _maxParticipants Maximum participants (0 = unlimited)
+     * @param _minStakeAmount Minimum stake amount required
+     * @param _joinPriceAdjustment Join price increase rate in basis points (100 = 1%)
+     * @param _reviewCount Number of reviews required per output
+     * @param _outlierThreshold Deviation threshold for slashing
+     * @param _slashRatio Percentage of stake to slash
+     */
+    function updateContestParameters(
+        uint256 _maxParticipants,
+        uint256 _minStakeAmount,
+        uint256 _joinPriceAdjustment,
+        uint256 _reviewCount,
+        uint256 _outlierThreshold,
+        uint256 _slashRatio
+    ) external onlyOwner {
+        require(submissionIds.length == 0, "Cannot update after submissions started");
+        require(_reviewCount > 0, "Review count must be > 0");
+        require(_outlierThreshold > 0 && _outlierThreshold <= 1e6, "Invalid outlier threshold");
+        require(_slashRatio <= 1000, "Slash ratio too high (max 100%)");
+        
+        maxParticipants = _maxParticipants;
+        minStakeAmount = _minStakeAmount;
+        joinPriceAdjustment = _joinPriceAdjustment;
+        reviewCount = _reviewCount;
+        outlierThreshold = _outlierThreshold;
+        slashRatio = _slashRatio;
+        
+        // Reset current join price if min stake changed
+        if (participantList.length == 0) {
+            currentJoinPrice = _minStakeAmount;
+        }
+        
+        emit ContestParametersUpdated(_maxParticipants, _minStakeAmount, _reviewCount, _outlierThreshold, _slashRatio);
+    }
+    
+    event ContestParametersUpdated(
+        uint256 maxParticipants, 
+        uint256 minStakeAmount, 
+        uint256 reviewCount,
+        uint256 outlierThreshold,
+        uint256 slashRatio
+    );
 
     /**
      * @notice Calculate current contest phase based on elapsed time
      * @dev Divides duration into 4 equal quarters: Commit → Reveal → ReviewCommit → ReviewReveal
+     * After contest duration expires, it enters Finalized phase automatically
+     * Note: Contests are currently single-cycle (non-recurring)
      * @return Current phase enum
      */
     function getCurrentPhase() public view returns (ReviewStructs.Phase) {

@@ -10,7 +10,9 @@ interface IContestManager {
         string metadataURI;
         uint256 duration;
         uint256 stakingAmount;
-        address qcAddress;
+        uint256 reviewCount;
+        uint256 outlierThreshold;
+        uint256 slashRatio;
     }
 
     struct StakeInfo {
@@ -22,6 +24,8 @@ interface IContestManager {
     function createContest(ContestConfig calldata config) external returns (address contestAddress);
     
     function recordStake(address participant, uint256 amount) external;
+    
+    function refundStake(address contestAddress, address participant, uint256 amount) external;
     
     function unstakeFromContest(address contestAddress) external;
     

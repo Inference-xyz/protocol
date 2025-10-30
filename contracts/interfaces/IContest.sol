@@ -19,7 +19,6 @@ interface IContest {
         uint256 startTime;
         uint256 duration;
         ContestStatus status;
-        address qcAddress;
     }
 
     struct Participant {
@@ -37,14 +36,20 @@ interface IContest {
         uint256 duration,
         address contestManager,
         address infToken,
-        address qcAddress
+        uint256 reviewCount,
+        uint256 outlierThreshold,
+        uint256 slashRatio
     ) external;
 
     function joinContest(uint256 stakeAmount) external;
 
-    function commitReview(uint256 submissionId, bytes32 commitHash) external;
+    function commitReview(uint256 outputId, bytes32 commitHash) external;
     
-    function revealReview(uint256 submissionId, uint256 score, uint256 nonce) external;
+    function revealReview(uint256 outputId, uint256 score, uint256 nonce) external;
+    
+    function aggregateReviews(uint256 contestId) external;
+    
+    function evaluateReviewer(address reviewer) external;
 
     function generateReviewAssignments() external;
     

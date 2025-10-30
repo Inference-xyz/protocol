@@ -52,7 +52,9 @@ contract ContestManager is IContestManager, Ownable, ReentrancyGuard {
             config.duration,
             address(this),
             infToken,
-            config.qcAddress
+            config.reviewCount,
+            config.outlierThreshold,
+            config.slashRatio
         );
         
         allContests.push(contestAddress);
@@ -83,6 +85,30 @@ contract ContestManager is IContestManager, Ownable, ReentrancyGuard {
         stakeInfo.lockedUntil = contestEndTime[msg.sender];
         
         emit Staked(msg.sender, participant, amount);
+    }
+
+    /**
+     * @notice Refund stake to participant (called by Contest during leaveContest)
+     * @dev Only callable by valid Contest contracts. Used when participant leaves before contest starts
+     * @param contestAddress Contest from which participant is leaving
+     * @param participant Address of participant to refund
+     * @param amount Stake amount to refund
+     */
+    function refundStake(address contestAddress, address participant, uint256 amount) external override nonReentrant {
+        require(validContests[msg.sender], "Only valid contests");
+        require(msg.sender == contestAddress, "Contest address mismatch");
+        require(participant != address(0), "Invalid participant address");
+        require(amount > 0, "Amount must be greater than 0");
+        
+        StakeInfo storage stakeInfo = stakes[contestAddress][participant];
+        require(stakeInfo.amount >= amount, "Insufficient stake to refund");
+        
+        // Update state before external call
+        stakeInfo.amount -= amount;
+        
+        require(IERC20(infToken).transfer(participant, amount), "Transfer failed");
+        
+        emit Unstaked(contestAddress, participant, amount);
     }
 
     /**
