@@ -1,0 +1,7 @@
+# Verifier dependencies
+httpx==0.25.2
+PyJWT==2.8.0
+cryptography==41.0.7
+click==8.1.7
+rich==13.7.0
+

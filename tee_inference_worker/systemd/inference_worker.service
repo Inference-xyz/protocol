@@ -1,0 +1,46 @@
+[Unit]
+Description=TEE Inference Worker
+After=docker.service
+Requires=docker.service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=10
+User=root
+
+Environment="IMAGE_DIGEST="
+Environment="MODEL_HASH="
+Environment="MODEL_PATH=/app/models/model.onnx"
+Environment="ENFORCE_HASH=true"
+
+ExecStartPre=-/usr/bin/docker pull ${IMAGE_DIGEST}
+ExecStartPre=-/usr/bin/docker stop inference-worker
+ExecStartPre=-/usr/bin/docker rm inference-worker
+
+ExecStart=/usr/bin/docker run \
+    --rm \
+    --read-only \
+    --tmpfs /tmp:rw,noexec,nosuid,size=100m \
+    --no-new-privileges \
+    --security-opt=no-new-privileges \
+    --cap-drop=ALL \
+    --network=host \
+    --name=inference-worker \
+    -e MODEL_PATH=${MODEL_PATH} \
+    -e MODEL_HASH=${MODEL_HASH} \
+    -e ENFORCE_HASH=${ENFORCE_HASH} \
+    ${IMAGE_DIGEST}
+
+ExecStop=/usr/bin/docker stop -t 10 inference-worker
+ExecStopPost=-/usr/bin/docker rm -f inference-worker
+
+ProtectSystem=strict
+ProtectHome=yes
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+
