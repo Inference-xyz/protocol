@@ -4,34 +4,16 @@
   "description": "Inference Protocol - Decentralized AI inference competitions and compute marketplace",
   "main": "index.js",
   "scripts": {
+    "demo": "npx ts-node demo/contest_demo.ts",
     "build": "forge build",
-    "test": "forge test",
-    "demo": "tsx scripts/demo.ts"
-  },
-  "keywords": [
-    "ethereum",
-    "solidity",
-    "defi",
-    "ai",
-    "zk-proofs"
-  ],
-  "author": "Inference Protocol Team",
-  "license": "MIT",
-  "devDependencies": {
-    "@typechain/ethers-v6": "^0.5.0",
-    "@types/chai": "^4.3.0",
-    "@types/mocha": "^10.0.0",
-    "@types/node": "^20.0.0",
-    "chai": "^4.3.0",
-    "ethers": "^6.8.0",
-    "hardhat": "^2.19.0",
-    "mocha": "^10.0.0",
-    "ts-node": "^10.9.0",
-    "tsx": "^4.6.0",
-    "typechain": "^8.3.0",
-    "typescript": "^5.0.0"
+    "test": "forge test"
   },
   "dependencies": {
-    "dotenv": "^16.6.1"
+    "ethers": "^6.8.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.0.0"
   }
 }
